@@ -1,26 +1,93 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --radius: 0.625rem;
+  
+  /* Light mode tokens */
+  --color-bg-val: #FAF9FB;
+  --color-surface-val: #FFFFFF;
+  --color-surface-2-val: #F3F1F6;
+  --color-border-val: #E4E2EB;
+  --color-accent-val: #6C63FF;
+  --color-accent-glow-val: rgba(108,99,255,0.08);
+  --color-text-1-val: #1C1B22;
+  --color-text-2-val: #5C5B66;
+}
+
+.dark {
+  /* Dark mode tokens */
+  --color-bg-val: #0A0A0F;
+  --color-surface-val: #13131A;
+  --color-surface-2-val: #1C1C27;
+  --color-border-val: #2A2A3A;
+  --color-accent-val: #6C63FF;
+  --color-accent-glow-val: rgba(108,99,255,0.15);
+  --color-text-1-val: #F4F4F8;
+  --color-text-2-val: #9090A8;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--color-bg-val);
+  --color-surface: var(--color-surface-val);
+  --color-surface-2: var(--color-surface-2-val);
+  --color-border: var(--color-border-val);
+  --color-accent: var(--color-accent-val);
+  --color-accent-glow: var(--color-accent-glow-val);
+  --color-green: #22C55E;
+  --color-red: #EF4444;
+  --color-text-1: var(--color-text-1-val);
+  --color-text-2: var(--color-text-2-val);
+
+  --font-display: var(--font-outfit);
+  --font-body: var(--font-dm-sans);
+  --font-sans: var(--font-dm-sans);
+
+  /* Map shadcn UI vars to our tokens */
+  --color-background: var(--color-bg-val);
+  --color-foreground: var(--color-text-1-val);
+  --color-card: var(--color-surface-val);
+  --color-card-foreground: var(--color-text-1-val);
+  --color-popover: var(--color-surface-val);
+  --color-popover-foreground: var(--color-text-1-val);
+  --color-primary: var(--color-accent-val);
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: var(--color-surface-2-val);
+  --color-secondary-foreground: var(--color-text-1-val);
+  --color-muted: var(--color-surface-2-val);
+  --color-muted-foreground: var(--color-text-2-val);
+  --color-destructive: #EF4444;
+  --color-destructive-foreground: #FFFFFF;
+  --color-input: var(--color-border-val);
+  --color-ring: var(--color-accent-val);
+  
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-bg text-text-1 font-body transition-colors duration-200;
+    background: radial-gradient(ellipse 80% 50% at 50% -10%, var(--color-accent-glow) 0%, transparent 70%), var(--color-bg);
+    min-height: 100vh;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes float {
+  0%, 100% { transform: translateY(0) }
+  50% { transform: translateY(-6px) }
+}
+.animate-float {
+  animation: float 6s ease-in-out infinite;
 }
