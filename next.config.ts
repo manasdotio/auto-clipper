@@ -18,6 +18,22 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        sharp$: false,
+        "onnxruntime-node$": false,
+      };
+    }
+    return config;
+  },
+  turbopack: {
+    resolveAlias: {
+      sharp: "false",
+      "onnxruntime-node": "false",
+    },
+  },
 };
 
 export default nextConfig;

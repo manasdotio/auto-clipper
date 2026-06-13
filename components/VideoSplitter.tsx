@@ -39,12 +39,14 @@ export default function VideoSplitter() {
   
   const ffmpegRef = useRef<FFmpeg | null>(null);
   const previewRef = useRef<HTMLDivElement>(null);
+  const logsRef = useRef<string[]>([]);
   
   // Primary Video State
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoSrc, setVideoSrc] = useState<string>("");
   const [duration, setDuration] = useState<number>(0);
   const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
+  const [bgVideoDimensions, setBgVideoDimensions] = useState({ width: 0, height: 0 });
   const [segmentLengthMinutes, setSegmentLengthMinutes] = useState<number>(1);
   const [prefix, setPrefix] = useState<string>("part");
   
@@ -101,6 +103,12 @@ export default function VideoSplitter() {
   const [results, setResults] = useState<{ name: string; url: string }[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isZipping, setIsZipping] = useState(false);
+  const [ffmpegLogs, setFfmpegLogs] = useState<string[]>([]);
+
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [transcriptionProgress, setTranscriptionProgress] = useState(0);
+  const [transcriptionStatus, setTranscriptionStatus] = useState("");
+  const [previewTime, setPreviewTime] = useState<number>(0);
 
   const segmentLength = segmentLengthMinutes * 60;
 
@@ -114,6 +122,8 @@ export default function VideoSplitter() {
       
       ffmpeg.on("log", ({ message }) => {
         console.log("FFmpeg Log:", message);
+        logsRef.current.push(message);
+        setFfmpegLogs([...logsRef.current.slice(-120)]);
       });
       
       ffmpeg.on("progress", ({ progress }) => {
@@ -151,17 +161,24 @@ export default function VideoSplitter() {
     }
   }, [videoFile]);
 
-  // Update object URL for preview when background video changes
+  // Update object URL for preview and capture dimensions when background video changes
   useEffect(() => {
     if (bgVideoFile) {
       const url = URL.createObjectURL(bgVideoFile);
-      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBgVideoSrc(url);
+      
+      const video = document.createElement("video");
+      video.src = url;
+      video.onloadedmetadata = () => {
+        setBgVideoDimensions({ width: video.videoWidth, height: video.videoHeight });
+      };
+      
       return () => {
         URL.revokeObjectURL(url);
       };
     } else {
       setBgVideoSrc("");
+      setBgVideoDimensions({ width: 0, height: 0 });
     }
   }, [bgVideoFile]);
 
@@ -242,6 +259,121 @@ export default function VideoSplitter() {
       next.splice(idx, 1);
       return next;
     });
+  };
+
+  const formatSRTTime = (seconds: number): string => {
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+  };
+
+  const convertChunksToSRT = (chunks: Array<{ timestamp: [number, number]; text: string }>): string => {
+    return chunks
+      .map((chunk, index) => {
+        const startSec = chunk.timestamp[0] ?? 0;
+        const endSec = chunk.timestamp[1] ?? (startSec + 2);
+        const text = chunk.text.trim();
+        return `${index + 1}\n${formatSRTTime(startSec)} --> ${formatSRTTime(endSec)}\n${text}`;
+      })
+      .join("\n\n");
+  };
+
+  const generateCaptions = async () => {
+    if (!videoFile) return;
+
+    setIsTranscribing(true);
+    setTranscriptionProgress(0);
+    setTranscriptionStatus("Extracting audio from video...");
+
+    try {
+      const arrayBuffer = await videoFile.arrayBuffer();
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error("Web Audio API is not supported in this browser.");
+      }
+      
+      const audioCtx = new AudioContextClass();
+      setTranscriptionStatus("Decoding audio channels...");
+      
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      setTranscriptionStatus("Resampling audio to 16kHz mono...");
+      
+      const offlineCtx = new OfflineAudioContext(
+        1,
+        Math.round(audioBuffer.duration * 16000),
+        16000
+      );
+
+      const bufferSource = offlineCtx.createBufferSource();
+      bufferSource.buffer = audioBuffer;
+      bufferSource.connect(offlineCtx.destination);
+      bufferSource.start();
+
+      const resampledBuffer = await offlineCtx.startRendering();
+      const audioData = resampledBuffer.getChannelData(0);
+
+      setTranscriptionStatus("Loading Whisper AI model...");
+
+      // Instantiate Web Worker from the static public path
+      const worker = new Worker("/whisper.worker.js", {
+        type: "module",
+      });
+
+      worker.onerror = (err) => {
+        console.error("Worker load/execution error:", err);
+        setIsTranscribing(false);
+        setTranscriptionStatus("");
+        alert("Failed to load transcription worker. Please verify browser console logs for details.");
+        worker.terminate();
+      };
+
+      worker.onmessage = (event) => {
+        const { status, progress, message, result, error } = event.data;
+
+        if (status === "loading") {
+          setTranscriptionStatus(message);
+        } else if (status === "progress") {
+          setTranscriptionProgress(progress);
+          setTranscriptionStatus(`Downloading AI Model... ${Math.round(progress)}%`);
+        } else if (status === "transcribing") {
+          setTranscriptionStatus("Transcribing audio (running locally on your device)...");
+          setTranscriptionProgress(0);
+        } else if (status === "completed") {
+          setIsTranscribing(false);
+          setTranscriptionStatus("");
+
+          if (result && result.chunks) {
+            const srtContent = convertChunksToSRT(result.chunks);
+            const newSrtFile = new File([srtContent], `${videoFile.name.split(".")[0]}.srt`, {
+              type: "text/plain",
+            });
+
+            setSrtFile(newSrtFile);
+            const parsed = parseSRT(srtContent);
+            setSubtitlesList(parsed);
+            alert("Subtitles generated successfully!");
+          } else {
+            alert("No speech was detected or transcription was empty.");
+          }
+          worker.terminate();
+        } else if (status === "error") {
+          setIsTranscribing(false);
+          setTranscriptionStatus("");
+          alert(`Failed to transcribe: ${error}`);
+          worker.terminate();
+        }
+      };
+
+      worker.postMessage({ audio: audioData });
+    } catch (err: any) {
+      console.error("Transcription pipeline failed:", err);
+      setIsTranscribing(false);
+      setTranscriptionStatus("");
+      alert(`Failed to generate subtitles: ${err.message || String(err)}`);
+    }
   };
 
   // SRT Subtitle Parser
@@ -335,9 +467,11 @@ export default function VideoSplitter() {
     };
     ffmpeg.on("log", logHandler);
     try {
-      await ffmpeg.exec(["-i", filename]);
+      // Use a valid null output with short duration so FFmpeg completes successfully with exit code 0
+      // This prevents the WebAssembly instance from aborting and entering a corrupted state.
+      await ffmpeg.exec(["-t", "0.1", "-i", filename, "-c", "copy", "-f", "null", "-"]);
     } catch (e) {
-      // Ignore exit error since no output was specified
+      console.warn("Audio track check warning:", e);
     } finally {
       ffmpeg.off("log", logHandler);
     }
@@ -347,46 +481,91 @@ export default function VideoSplitter() {
   const handleSplit = async () => {
     if (!videoFile || duration === 0 || !ffmpegRef.current) return;
     
+    logsRef.current = [];
+    setFfmpegLogs([]);
     setProcessing(true);
     setStatusDetail("Preparing workspace...");
     const ffmpeg = ffmpegRef.current;
     
     try {
+      console.log("Starting split process. Writing main video file:", videoFile.name);
       // 1. Write the main video file
-      await ffmpeg.writeFile(videoFile.name, await fetchFile(videoFile));
+      try {
+        await ffmpeg.writeFile(videoFile.name, await fetchFile(videoFile));
+        console.log("Main video file written to virtual filesystem successfully.");
+      } catch (writeErr) {
+        console.error("Failed to write main video file to virtual filesystem:", writeErr);
+        throw new Error(`Failed to upload main video: ${writeErr instanceof Error ? writeErr.message : writeErr}`);
+      }
       
       // Write font if subtitles or text overlays are active
       if (topText || bottomText || subtitlesList.length > 0) {
-        await ffmpeg.writeFile("font.ttf", new Uint8Array(await (await fetch("/Roboto-Regular.ttf")).arrayBuffer()));
+        console.log("Writing font.ttf to virtual filesystem...");
+        try {
+          await ffmpeg.writeFile("font.ttf", new Uint8Array(await (await fetch("/Roboto-Regular.ttf")).arrayBuffer()));
+          console.log("font.ttf written successfully.");
+        } catch (fontErr) {
+          console.error("Failed to write font.ttf:", fontErr);
+        }
       }
 
       // Check primary video audio
+      console.log("Checking audio track of primary video...");
       const primaryHasAudio = await checkAudioTrack(ffmpeg, videoFile.name);
+      console.log("Primary video has audio track:", primaryHasAudio);
 
       // Check and write background video
       let bgVideoHasAudio = false;
       if (isGenZSplit && bgVideoFile) {
-        await ffmpeg.writeFile(bgVideoFile.name, await fetchFile(bgVideoFile));
-        bgVideoHasAudio = await checkAudioTrack(ffmpeg, bgVideoFile.name);
+        console.log("Writing background video file:", bgVideoFile.name);
+        try {
+          await ffmpeg.writeFile(bgVideoFile.name, await fetchFile(bgVideoFile));
+          bgVideoHasAudio = await checkAudioTrack(ffmpeg, bgVideoFile.name);
+          console.log("Background video written and checked. Has audio:", bgVideoHasAudio);
+        } catch (bgErr) {
+          console.error("Failed to write background video:", bgErr);
+          throw new Error(`Failed to upload background video: ${bgErr instanceof Error ? bgErr.message : bgErr}`);
+        }
       }
 
       // Check hooks audio track
       const hookAudioStatus: Record<string, boolean> = {};
       if (isHookEnabled && hookFiles.length > 0) {
+        console.log("Writing hook files and checking audio...");
         for (const hook of hookFiles) {
-          await ffmpeg.writeFile(hook.name, await fetchFile(hook));
-          hookAudioStatus[hook.name] = await checkAudioTrack(ffmpeg, hook.name);
+          try {
+            await ffmpeg.writeFile(hook.name, await fetchFile(hook));
+            hookAudioStatus[hook.name] = await checkAudioTrack(ffmpeg, hook.name);
+            console.log(`Hook ${hook.name} written and checked. Has audio:`, hookAudioStatus[hook.name]);
+          } catch (hookErr) {
+            console.error(`Failed to write hook ${hook.name}:`, hookErr);
+            throw new Error(`Failed to upload hook ${hook.name}: ${hookErr instanceof Error ? hookErr.message : hookErr}`);
+          }
         }
       }
 
       // Write background audio file if present
       if (isBgAudioEnabled && bgAudioFile) {
-        await ffmpeg.writeFile(bgAudioFile.name, await fetchFile(bgAudioFile));
+        console.log("Writing background audio file:", bgAudioFile.name);
+        try {
+          await ffmpeg.writeFile(bgAudioFile.name, await fetchFile(bgAudioFile));
+          console.log("Background audio file written successfully.");
+        } catch (bgAudioErr) {
+          console.error("Failed to write background audio:", bgAudioErr);
+          throw new Error(`Failed to upload background music: ${bgAudioErr instanceof Error ? bgAudioErr.message : bgAudioErr}`);
+        }
       }
 
       // Write watermark if present
       if (watermarkFile) {
-        await ffmpeg.writeFile("watermark.png", await fetchFile(watermarkFile));
+        console.log("Writing watermark image...");
+        try {
+          await ffmpeg.writeFile("watermark.png", await fetchFile(watermarkFile));
+          console.log("Watermark image written successfully.");
+        } catch (wmErr) {
+          console.error("Failed to write watermark:", wmErr);
+          throw new Error(`Failed to upload watermark: ${wmErr instanceof Error ? wmErr.message : wmErr}`);
+        }
       }
 
       // 2. Pre-calculate split timings (with scene cuts if toggled)
@@ -516,25 +695,112 @@ export default function VideoSplitter() {
           }
 
           // Dimensions (ensuring divisibility by 2)
-          let targetW = 1080;
-          let targetH = 1920;
-          if (aspectRatio === "4:5") {
-            targetW = 1080;
-            targetH = 1350;
-          } else if (aspectRatio === "original" && videoDimensions.width > 0) {
+          let targetW = 720;
+          let targetH = 1280;
+          
+          if (aspectRatio === "original" && videoDimensions.width > 0) {
             targetW = videoDimensions.width;
             targetH = videoDimensions.height;
-            if (targetW % 2 !== 0) targetW--;
-            if (targetH % 2 !== 0) targetH--;
           } else if (videoDimensions.width > 0 && videoDimensions.height > 0) {
+            // Cap the target width at 720 to prevent WebAssembly memory crashes
             if (videoDimensions.width > videoDimensions.height) {
-              targetW = Math.min(videoDimensions.height, 1080);
+              targetW = Math.min(videoDimensions.height, 720);
             } else {
-              targetW = Math.min(videoDimensions.width, 1080);
+              targetW = Math.min(videoDimensions.width, 720);
             }
             if (targetW % 2 !== 0) targetW--;
-            targetH = Math.round(targetW * 16 / 9);
-            if (targetH % 2 !== 0) targetH--;
+            
+            if (aspectRatio === "4:5") {
+              targetH = Math.round(targetW * 5 / 4);
+            } else {
+              targetH = Math.round(targetW * 16 / 9);
+            }
+          } else {
+            // Fallback if dimensions are unavailable
+            if (aspectRatio === "4:5") {
+              targetW = 720;
+              targetH = 900;
+            } else {
+              targetW = 720;
+              targetH = 1280;
+            }
+          }
+          
+          if (targetW % 2 !== 0) targetW--;
+          if (targetH % 2 !== 0) targetH--;
+
+          // Pre-calculate crop dimensions in Javascript to avoid FFmpeg syntax and parsing errors with commas/parentheses
+          const isAspectActive = aspectRatio !== "original";
+          const primaryW = videoDimensions.width > 0 ? videoDimensions.width : 1280;
+          const primaryH = videoDimensions.height > 0 ? videoDimensions.height : 720;
+          
+          let primaryCropW = primaryW;
+          let primaryCropH = primaryH;
+          
+          if (isAspectActive) {
+            if (isGenZSplit && bgVideoFile) {
+              const aspect = 9 / 8; // Gen Z stacked layout splits height in half, so aspect ratio of each screen is 9:8
+              if (primaryW / primaryH > aspect) {
+                primaryCropW = Math.round(primaryH * aspect);
+                primaryCropH = primaryH;
+              } else {
+                primaryCropW = primaryW;
+                primaryCropH = Math.round(primaryW / aspect);
+              }
+            } else {
+              const aspect = aspectRatio === "4:5" ? 4 / 5 : 9 / 16;
+              if (primaryW / primaryH > aspect) {
+                primaryCropW = Math.round(primaryH * aspect);
+                primaryCropH = primaryH;
+              } else {
+                primaryCropW = primaryW;
+                primaryCropH = Math.round(primaryW / aspect);
+              }
+            }
+          }
+          if (primaryCropW % 2 !== 0) primaryCropW--;
+          if (primaryCropH % 2 !== 0) primaryCropH--;
+
+          // Apply anti-copyright scale multipliers if enabled
+          const finalPrimaryCropW = bypassCopyright ? Math.round(primaryCropW * 0.985) : primaryCropW;
+          const finalPrimaryCropH = bypassCopyright ? Math.round(primaryCropH * 0.985) : primaryCropH;
+          const safePrimaryCropW = finalPrimaryCropW % 2 === 0 ? finalPrimaryCropW : finalPrimaryCropW - 1;
+          const safePrimaryCropH = finalPrimaryCropH % 2 === 0 ? finalPrimaryCropH : finalPrimaryCropH - 1;
+
+          // Pre-calculate background crop sizes (for GenZ Split)
+          let bgCropW = 1280;
+          let bgCropH = 720;
+          if (isGenZSplit && bgVideoFile) {
+            const bgW = bgVideoDimensions.width > 0 ? bgVideoDimensions.width : 1280;
+            const bgH = bgVideoDimensions.height > 0 ? bgVideoDimensions.height : 720;
+            const aspect = 9 / 8;
+            if (bgW / bgH > aspect) {
+              bgCropW = Math.round(bgH * aspect);
+              bgCropH = bgH;
+            } else {
+              bgCropW = bgW;
+              bgCropH = Math.round(bgW / aspect);
+            }
+            if (bgCropW % 2 !== 0) bgCropW--;
+            if (bgCropH % 2 !== 0) bgCropH--;
+          }
+
+          // Pre-calculate hook crop sizes
+          let hookCropW = 1280;
+          let hookCropH = 720;
+          if (hookIdx !== -1 && selectedHook) {
+            const hookW = 1280; // Default standard assumption
+            const hookH = 720;
+            const aspect = aspectRatio === "4:5" ? 4 / 5 : 9 / 16;
+            if (hookW / hookH > aspect) {
+              hookCropW = Math.round(hookH * aspect);
+              hookCropH = hookH;
+            } else {
+              hookCropW = hookW;
+              hookCropH = Math.round(hookW / aspect);
+            }
+            if (hookCropW % 2 !== 0) hookCropW--;
+            if (hookCropH % 2 !== 0) hookCropH--;
           }
 
           // Anti-Copyright randomized offsets
@@ -544,13 +810,10 @@ export default function VideoSplitter() {
 
           // Build filter graph parts
           const filterParts: string[] = [];
-          const isAspectActive = aspectRatio !== "original";
 
           // Hook processing
           if (hookIdx !== -1 && selectedHook) {
-            const cropAspect = aspectRatio === "4:5" ? "4/5" : "9/16";
-            const cropHAspect = aspectRatio === "4:5" ? "5/4" : "16/9";
-            filterParts.push(`[${hookIdx}:v]crop='min(iw,ih*${cropAspect})':'min(ih,iw*${cropHAspect})',scale=${targetW}:${targetH}[hook_v]`);
+            filterParts.push(`[${hookIdx}:v]crop=${hookCropW}:${hookCropH},scale=${targetW}:${targetH}[hook_v]`);
             if (hookAudioStatus[selectedHook.name]) {
               filterParts.push(`[${hookIdx}:a]volume=1[hook_a]`);
             } else {
@@ -561,29 +824,22 @@ export default function VideoSplitter() {
           // Primary video composition with chosen Framing Mode
           if (isAspectActive) {
             if (isGenZSplit && bgVideoFile) {
-              const cropW = bypassCopyright ? `0.985*min(iw,ih*9/8)` : `min(iw,ih*9/8)`;
-              const cropH = bypassCopyright ? `0.985*min(ih,iw*8/9)` : `min(ih,iw*8/9)`;
-              let primVF = `[${primaryIdx}:v]crop=${cropW}:${cropH},scale=${targetW}:${targetH / 2}`;
+              let primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${targetH / 2}`;
               if (bypassCopyright) {
                 primVF += `,hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
               }
               filterParts.push(`${primVF}[primary_v]`);
             } else {
-              const cropAspect = aspectRatio === "4:5" ? "4/5" : "9/16";
-              const cropHAspect = aspectRatio === "4:5" ? "5/4" : "16/9";
-              
               let primVF = "";
               if (framingMode === "crop") {
-                const cropW = bypassCopyright ? `0.985*min(iw,ih*${cropAspect})` : `min(iw,ih*${cropAspect})`;
-                const cropH = bypassCopyright ? `0.985*min(ih,iw*${cropHAspect})` : `min(ih,iw*${cropHAspect})`;
-                primVF = `[${primaryIdx}:v]crop=${cropW}:${cropH},scale=${targetW}:${targetH}`;
+                primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${targetH}`;
               } else if (framingMode === "letterbox") {
                 const zoomCrop = bypassCopyright ? "crop=0.985*iw:0.985*ih," : "";
                 primVF = `[${primaryIdx}:v]${zoomCrop}scale=${targetW}:-2,pad=${targetW}:${targetH}:0:(oh-ih)/2:black`;
               } else {
                 const zoomCrop = bypassCopyright ? "crop=0.985*iw:0.985*ih," : "";
                 filterParts.push(`[${primaryIdx}:v]${zoomCrop}split=2[v_bg][v_fg]`);
-                filterParts.push(`[v_bg]crop='min(iw,ih*${cropAspect})':'min(ih,iw*${cropHAspect})',scale=${targetW}:${targetH},boxblur=20:2[bg_blur]`);
+                filterParts.push(`[v_bg]crop=${primaryCropW}:${primaryCropH},scale=${targetW}:${targetH},boxblur=20:2[bg_blur]`);
                 filterParts.push(`[v_fg]scale=${targetW}:-2[fg_scaled]`);
                 primVF = `[bg_blur][fg_scaled]overlay=0:(H-h)/2`;
               }
@@ -618,7 +874,7 @@ export default function VideoSplitter() {
 
           // Background Video stack
           if (isGenZSplit && bgVideoFile && bgIdx !== -1) {
-            filterParts.push(`[${bgIdx}:v]crop='min(iw,ih*9/8)':'min(ih,iw*8/9)',scale=${targetW}:${targetH / 2}[bg_v]`);
+            filterParts.push(`[${bgIdx}:v]crop=${bgCropW}:${bgCropH},scale=${targetW}:${targetH / 2}[bg_v]`);
             filterParts.push(`[primary_v][bg_v]vstack=inputs=2[main_v]`);
           } else {
             filterParts.push(`[primary_v]null[main_v]`);
@@ -663,12 +919,15 @@ export default function VideoSplitter() {
               return text.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "'\\''").replace(/,/g, '\\,');
             };
             
-            for (const sub of segmentSubs) {
+            for (let j = 0; j < segmentSubs.length; j++) {
+              const sub = segmentSubs[j];
               const startInClip = Math.max(0, sub.start - startTime) + hookDuration;
               const endInClip = Math.min(currentSegmentLength, sub.end - startTime) + hookDuration;
               const escaped = escapeText(sub.text.replace(/\n/g, ' '));
               
-              srtVF += `,drawtext=fontfile=font.ttf:text='${escaped}':fontcolor=white:fontsize=h/22:x=(w-text_w)/2:y=h*0.75:borderw=3:bordercolor=black:enable='between(t,${startInClip.toFixed(2)},${endInClip.toFixed(2)})'`;
+              // No comma for the very first filter in the chain after the input label
+              const separator = (j === 0 && srtVF.startsWith("[")) ? "" : ",";
+              srtVF += `${separator}drawtext=fontfile=font.ttf:text='${escaped}':fontcolor=white:fontsize=h/22:x=(w-text_w)/2:y=h*0.75:borderw=3:bordercolor=black:enable='between(t,${startInClip.toFixed(2)},${endInClip.toFixed(2)})'`;
             }
             filterParts.push(`${srtVF}[subbed_v]`);
             subtitledStream = "[subbed_v]";
@@ -683,13 +942,18 @@ export default function VideoSplitter() {
               return str.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "'\\''").replace(/,/g, '\\,');
             };
             
+            let isFirst = true;
             if (topText) {
               const escaped = escapeText(topText, i + 1);
-              textVF += `,drawtext=fontfile=font.ttf:text='${escaped}':fontcolor=white:fontsize=h/18:x=(w-text_w)/2:y=h*${topTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
+              const separator = (isFirst && textVF.startsWith("[")) ? "" : ",";
+              textVF += `${separator}drawtext=fontfile=font.ttf:text='${escaped}':fontcolor=white:fontsize=h/18:x=(w-text_w)/2:y=h*${topTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
+              isFirst = false;
             }
             if (bottomText) {
               const escapedBottom = escapeText(bottomText, i + 1);
-              textVF += `,drawtext=fontfile=font.ttf:text='${escapedBottom}':fontcolor=white:fontsize=h/18:x=(w-text_w)/2:y=h*${bottomTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
+              const separator = (isFirst && textVF.startsWith("[")) ? "" : ",";
+              textVF += `${separator}drawtext=fontfile=font.ttf:text='${escapedBottom}':fontcolor=white:fontsize=h/18:x=(w-text_w)/2:y=h*${bottomTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
+              isFirst = false;
             }
             filterParts.push(`${textVF}[final_v]`);
             finalVideoLabel = "[final_v]";
@@ -711,10 +975,31 @@ export default function VideoSplitter() {
         }
 
         // Run segment processing
-        await ffmpeg.exec(args);
+        console.log(`Executing FFmpeg segment ${i + 1}/${numSegments} with arguments:`, args);
+        let exitCode: number;
+        try {
+          exitCode = await ffmpeg.exec(args);
+        } catch (execErr) {
+          console.error(`FFmpeg execution encountered a fatal crash for segment ${i + 1}:`, execErr);
+          throw execErr;
+        }
+
+        console.log(`FFmpeg segment ${i + 1} completed with exit code:`, exitCode);
+        if (exitCode !== 0) {
+          const lastLogs = logsRef.current.slice(-15).join("\n");
+          throw new Error(`FFmpeg failed on segment ${i + 1} (exit code ${exitCode}).\n\nArguments:\n${args.join(" ")}\n\nLast FFmpeg logs:\n${lastLogs}`);
+        }
         
         // Read file into memory and delete from virtual FS instantly to save memory
-        const data = await ffmpeg.readFile(outputName);
+        console.log(`Reading output file ${outputName} from virtual filesystem...`);
+        let data: Uint8Array;
+        try {
+          data = await ffmpeg.readFile(outputName) as Uint8Array;
+        } catch (readErr) {
+          console.error(`Failed to read output file ${outputName}:`, readErr);
+          throw readErr;
+        }
+
         const blob = new Blob([data as any], { type: "video/mp4" });
         const url = URL.createObjectURL(blob);
         newResults.push({ name: outputName, url });
@@ -728,7 +1013,8 @@ export default function VideoSplitter() {
       setResults(newResults);
     } catch (err) {
       console.error("Splitting failed:", err);
-      alert("An error occurred during video composition. Check that your media files are valid. Lowering the output segment length or choosing smaller assets can resolve memory constraints.");
+      const errMsg = err instanceof Error ? err.message : String(err);
+      alert(`An error occurred during video composition:\n\n${errMsg}\n\nCheck browser console for full FFmpeg execution logs.`);
     } finally {
       // 4. Final filesystem cleanup
       try {
@@ -867,6 +1153,8 @@ export default function VideoSplitter() {
   const numNominalSegments = Math.ceil((duration - startOffset) / segmentLength);
   const isLargeFile = videoFile && videoFile.size > 1.2 * 1024 * 1024 * 1024; // 1.2 GB
 
+  const activeSubtitle = subtitlesList.find(sub => previewTime >= sub.start && previewTime <= sub.end);
+
   return (
     <div 
       className="max-w-6xl mx-auto mt-12 mb-24 rounded-[24px] border border-border bg-surface overflow-hidden"
@@ -939,11 +1227,12 @@ export default function VideoSplitter() {
                       <div className="w-full h-full flex flex-col">
                         <div className="w-full h-[50%] relative overflow-hidden border-b border-neutral-800">
                           <video
-                            src={videoSrc}
+                            src={videoSrc || undefined}
                             controls
                             muted
                             loop
                             className="absolute w-full h-full object-cover"
+                            onTimeUpdate={(e) => setPreviewTime(e.currentTarget.currentTime)}
                           />
                         </div>
                         <div className="w-full h-[50%] relative overflow-hidden bg-neutral-900 flex items-center justify-center">
@@ -970,26 +1259,28 @@ export default function VideoSplitter() {
                         {framingMode === "blur" ? (
                           <>
                             <video
-                              src={videoSrc}
+                              src={videoSrc || undefined}
                               muted
                               loop
                               className="absolute inset-0 w-full h-full object-cover blur-md opacity-45 scale-110"
                             />
                             <video
-                              src={videoSrc}
+                              src={videoSrc || undefined}
                               controls
                               muted
                               loop
                               className="relative w-full h-auto object-contain z-10"
+                              onTimeUpdate={(e) => setPreviewTime(e.currentTarget.currentTime)}
                             />
                           </>
                         ) : (
                           <video
-                            src={videoSrc}
+                            src={videoSrc || undefined}
                             controls
                             muted
                             loop
                             className={`w-full h-full ${framingMode === "letterbox" ? "object-contain bg-black" : "object-cover"}`}
+                            onTimeUpdate={(e) => setPreviewTime(e.currentTarget.currentTime)}
                           />
                         )}
                       </div>
@@ -1096,6 +1387,18 @@ export default function VideoSplitter() {
                           <span className="text-white/85 text-[8.5px] flex items-center gap-0.5">🎵 Original Sound - Clipper</span>
                         </div>
 
+                        {/* Live Subtitle Overlay */}
+                        {activeSubtitle && (
+                          <div className="absolute bottom-[24%] left-0 right-0 px-4 text-center pointer-events-none z-30 animate-fade-in">
+                            <span 
+                              className="inline-block bg-black/75 text-white font-sans font-extrabold text-[11px] px-2.5 py-1 rounded-md border border-white/10 shadow-lg break-words max-w-[90%]"
+                              style={{ textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000' }}
+                            >
+                              {activeSubtitle.text}
+                            </span>
+                          </div>
+                        )}
+
                         {/* Dashed grid safe zone */}
                         <div className="absolute top-[16%] bottom-[18%] left-11 right-11 border-2 border-dashed border-amber-500 bg-amber-500/8 rounded flex items-center justify-center">
                           <span className="text-[8.5px] text-white bg-amber-600 px-2 py-0.5 rounded font-mono font-black uppercase tracking-wider shadow">Safe Text Area</span>
@@ -1111,11 +1414,12 @@ export default function VideoSplitter() {
                     className="relative w-full max-h-[300px] bg-black rounded-2xl border border-border overflow-hidden flex items-center justify-center shadow-lg"
                   >
                     <video
-                      src={videoSrc}
+                      src={videoSrc || undefined}
                       controls
                       muted
                       loop
                       className="w-full max-h-[300px]"
+                      onTimeUpdate={(e) => setPreviewTime(e.currentTarget.currentTime)}
                     />
                     
                     {topText && (
@@ -1151,6 +1455,17 @@ export default function VideoSplitter() {
                           style={{ textShadow: '-1.5px -1.5px 0 #000, 1.5px -1.5px 0 #000, -1.5px 1.5px 0 #000, 1.5px 1.5px 0 #000' }}
                         >
                           {bottomText.replace(/{n}/g, "1")}
+                        </span>
+                      </div>
+                    )}
+                    {/* Live Subtitle Overlay */}
+                    {activeSubtitle && (
+                      <div className="absolute bottom-[8%] left-0 right-0 px-4 text-center pointer-events-none z-30 animate-fade-in">
+                        <span 
+                          className="inline-block bg-black/75 text-white font-sans font-extrabold text-[11px] px-2.5 py-1 rounded-md border border-white/10 shadow-lg break-words max-w-[90%]"
+                          style={{ textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000' }}
+                        >
+                          {activeSubtitle.text}
                         </span>
                       </div>
                     )}
@@ -1715,23 +2030,53 @@ export default function VideoSplitter() {
                       <div className="bg-surface border border-border p-3 rounded-xl flex flex-col justify-between">
                         <div>
                           <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2">📝 Subtitles (.SRT)</span>
-                          <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2.5 px-2 rounded-lg cursor-pointer transition-all text-center">
-                            <input
-                              type="file"
-                              accept=".srt"
-                              onChange={handleSrtChange}
-                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                            />
-                            <Type className="w-4 h-4 text-accent mb-0.5" />
-                            <span className="text-xs text-text-1 font-semibold">Choose SRT</span>
-                          </label>
+                          <div className="grid grid-cols-2 gap-2">
+                            <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2 px-1 rounded-lg cursor-pointer transition-all text-center h-[54px]">
+                              <input
+                                type="file"
+                                accept=".srt"
+                                onChange={handleSrtChange}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                              />
+                              <Type className="w-4 h-4 text-accent mb-0.5" />
+                              <span className="text-[10px] text-text-1 font-semibold leading-tight">Choose SRT</span>
+                            </label>
+                            
+                            <button
+                              type="button"
+                              onClick={generateCaptions}
+                              disabled={!videoFile || isTranscribing}
+                              className="flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2 px-1 rounded-lg cursor-pointer transition-all text-center h-[54px] disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              <Sparkles className="w-4 h-4 text-accent mb-0.5 animate-pulse" />
+                              <span className="text-[10px] text-text-1 font-semibold leading-tight">
+                                {isTranscribing ? "Generating..." : "Auto AI SRT"}
+                              </span>
+                            </button>
+                          </div>
                         </div>
-                        {srtFile && (
+                        {isTranscribing && (
+                          <div className="mt-2 p-2 bg-accent-glow border border-accent/20 rounded-lg text-[10px] text-text-1 flex flex-col gap-1.5 animate-fade-in">
+                            <div className="flex justify-between font-bold">
+                              <span className="animate-pulse">{transcriptionStatus}</span>
+                            </div>
+                            {transcriptionStatus.includes("Downloading") && (
+                              <div className="w-full bg-border rounded-full h-1">
+                                <div 
+                                  className="bg-accent h-1 rounded-full transition-all duration-300" 
+                                  style={{ width: `${transcriptionProgress}%` }}
+                                ></div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {srtFile && !isTranscribing && (
                           <div className="flex justify-between items-center bg-surface-2 p-1 rounded-lg border border-border text-xs mt-2">
                             <span className="truncate text-text-1 font-medium max-w-[80px]" title={srtFile.name}>
                               📄 {srtFile.name}
                             </span>
                             <button
+                              type="button"
                               onClick={() => {
                                 setSrtFile(null);
                                 setSubtitlesList([]);
@@ -1836,6 +2181,31 @@ export default function VideoSplitter() {
                   <span className="text-xs text-text-2 text-center leading-tight">
                     Applying filters, mixing audio, and encoding. This runs 100% locally inside client WebAssembly.
                   </span>
+                </div>
+              )}
+
+              {/* FFmpeg Logs Panel */}
+              {ffmpegLogs.length > 0 && (
+                <div className="mt-3 w-full bg-[#111116] border border-border/80 rounded-xl p-3 shadow-2xl relative text-left">
+                  <div className="flex items-center justify-between border-b border-neutral-800 pb-1.5 mb-2">
+                    <span className="text-[10px] uppercase font-bold text-accent tracking-wider font-mono flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green animate-pulse"></span>
+                      Local FFmpeg Logs
+                    </span>
+                    <button 
+                      onClick={() => setFfmpegLogs([])}
+                      className="text-[9px] font-bold text-text-2 hover:text-red cursor-pointer transition-colors"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div className="w-full bg-black font-mono text-[9px] text-neutral-300 h-32 overflow-y-auto flex flex-col-reverse pr-1.5 rounded-lg p-2 border border-neutral-800">
+                    <div className="text-left w-full space-y-0.5 select-text">
+                      {ffmpegLogs.map((log, idx) => (
+                        <div key={idx} className="break-all leading-normal opacity-95 border-l border-accent/20 pl-1">{log}</div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
