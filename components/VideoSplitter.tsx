@@ -124,7 +124,10 @@ export default function VideoSplitter() {
       ffmpeg.on("log", ({ message }) => {
         console.log("FFmpeg Log:", message);
         logsRef.current.push(message);
-        setFfmpegLogs([...logsRef.current.slice(-120)]);
+        if (logsRef.current.length > 200) {
+          logsRef.current.shift();
+        }
+        setFfmpegLogs([...logsRef.current]);
       });
       
       ffmpeg.on("progress", ({ progress }) => {
@@ -167,6 +170,7 @@ export default function VideoSplitter() {
   useEffect(() => {
     if (bgVideoFile) {
       const url = URL.createObjectURL(bgVideoFile);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setBgVideoSrc(url);
       
       const video = document.createElement("video");
@@ -183,6 +187,17 @@ export default function VideoSplitter() {
       setBgVideoDimensions({ width: 0, height: 0 });
     }
   }, [bgVideoFile]);
+
+  // Clean up object URLs when results change or component unmounts to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      results.forEach((res) => {
+        if (res.url) {
+          URL.revokeObjectURL(res.url);
+        }
+      });
+    };
+  }, [results]);
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -240,6 +255,7 @@ export default function VideoSplitter() {
       };
       video.onerror = () => {
         resolve(0);
+        URL.revokeObjectURL(video.src);
       };
     });
   };
@@ -283,6 +299,27 @@ export default function VideoSplitter() {
       .join("\n\n");
   };
 
+  const resampleAudioBufferTo16kMono = async (audioBuffer: AudioBuffer): Promise<Float32Array> => {
+    const targetSampleRate = 16000;
+    const duration = audioBuffer.duration;
+    const length = Math.floor(duration * targetSampleRate);
+    
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const OfflineContext = window.OfflineAudioContext || (window as any).webkitOfflineAudioContext;
+    if (!OfflineContext) {
+      throw new Error("OfflineAudioContext is not supported.");
+    }
+    const offlineCtx = new OfflineContext(1, length, targetSampleRate);
+    
+    const source = offlineCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(offlineCtx.destination);
+    source.start(0);
+    
+    const renderedBuffer = await offlineCtx.startRendering();
+    return renderedBuffer.getChannelData(0);
+  };
+
   const generateCaptions = async () => {
     if (!videoFile) return;
 
@@ -290,51 +327,100 @@ export default function VideoSplitter() {
     setTranscriptionProgress(0);
     setTranscriptionStatus("Extracting audio from video...");
 
+    let audioData: Float32Array | null = null;
+    let nativeSuccessful = false;
+
+    // 1. Try to extract and decode audio track natively in the browser first (uses very little memory and is extremely fast)
     try {
-      const ffmpeg = ffmpegRef.current;
-      if (!ffmpeg) {
-        throw new Error("FFmpeg is not loaded yet.");
-      }
+      setTranscriptionStatus("Reading file natively...");
+      let arrayBuffer: ArrayBuffer | null = await videoFile.arrayBuffer();
 
-      setTranscriptionStatus("Writing video to workspace...");
-      await ffmpeg.writeFile(videoFile.name, await fetchFile(videoFile));
-
-      setTranscriptionStatus("Extracting & resampling audio...");
-      // Extract audio to 16kHz mono WAV format directly using FFmpeg
-      await ffmpeg.exec([
-        "-i", videoFile.name,
-        "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        "-ac", "1",
-        "audio.wav"
-      ]);
-
-      setTranscriptionStatus("Loading audio data...");
-      const wavData = await ffmpeg.readFile("audio.wav") as Uint8Array;
-
-      // Clean up the temporary WAV file
-      await ffmpeg.deleteFile("audio.wav").catch(() => {});
-
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextClass) {
         throw new Error("Web Audio API is not supported in this browser.");
       }
 
+      setTranscriptionStatus("Decoding audio natively...");
       const audioCtx = new AudioContextClass();
-      setTranscriptionStatus("Decoding resampled audio...");
+      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+      arrayBuffer = null; // Free up the raw file buffer memory instantly!
 
-      // Ensure we extract a clean, non-shared ArrayBuffer copy safely to prevent WebAudio decoding issues
-      const audioBufferCopy = new ArrayBuffer(wavData.byteLength);
-      new Uint8Array(audioBufferCopy).set(wavData);
+      setTranscriptionStatus("Resampling audio natively...");
+      audioData = await resampleAudioBufferTo16kMono(audioBuffer);
+      await audioCtx.close();
+      nativeSuccessful = true;
+      console.log("Native audio decoding and resampling succeeded.");
+    } catch (nativeErr) {
+      console.warn("Native audio decoding failed, falling back to FFmpeg:", nativeErr);
+    }
 
-      const audioBuffer = await audioCtx.decodeAudioData(audioBufferCopy);
-      const audioData = audioBuffer.getChannelData(0);
+    // 2. Fall back to FFmpeg WASM if native decoding fails
+    if (!nativeSuccessful) {
+      try {
+        const ffmpeg = ffmpegRef.current;
+        if (!ffmpeg) {
+          throw new Error("FFmpeg is not loaded yet.");
+        }
 
+        setTranscriptionStatus("Writing video to workspace (FFmpeg fallback)...");
+        await ffmpeg.writeFile(videoFile.name, await fetchFile(videoFile));
+
+        setTranscriptionStatus("Extracting & resampling audio (FFmpeg fallback)...");
+        await ffmpeg.exec([
+          "-i", videoFile.name,
+          "-vn",
+          "-acodec", "pcm_s16le",
+          "-ar", "16000",
+          "-ac", "1",
+          "audio.wav"
+        ]);
+
+        setTranscriptionStatus("Loading audio data (FFmpeg fallback)...");
+        const wavData = await ffmpeg.readFile("audio.wav") as Uint8Array;
+
+        // Clean up virtual FS immediately
+        await ffmpeg.deleteFile("audio.wav").catch(() => {});
+        await ffmpeg.deleteFile(videoFile.name).catch(() => {});
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        const audioCtx = new AudioContextClass();
+        setTranscriptionStatus("Decoding audio data (FFmpeg fallback)...");
+
+        const audioBufferCopy = new ArrayBuffer(wavData.byteLength);
+        new Uint8Array(audioBufferCopy).set(wavData);
+
+        const audioBuffer = await audioCtx.decodeAudioData(audioBufferCopy);
+        audioData = audioBuffer.getChannelData(0);
+        await audioCtx.close();
+      } catch (err: any) {
+        if (ffmpegRef.current) {
+          await ffmpegRef.current.deleteFile(videoFile.name).catch(() => {});
+          await ffmpegRef.current.deleteFile("audio.wav").catch(() => {});
+        }
+        console.error("FFmpeg fallback transcription failed:", err);
+        setIsTranscribing(false);
+        setTranscriptionStatus("");
+        alert(`Failed to generate subtitles: ${err.message || String(err)}`);
+        return;
+      }
+    }
+
+    if (!audioData) {
+      setIsTranscribing(false);
+      setTranscriptionStatus("");
+      alert("Failed to decode audio data.");
+      return;
+    }
+
+    // 3. Run speech recognition with the worker
+    try {
       setTranscriptionStatus("Loading Whisper AI model...");
 
-      // Instantiate Web Worker from the static public path
-      const worker = new Worker("/whisper.worker.js", {
+      // Instantiate Web Worker from the static public path with cache busting to force reloading edits
+      // eslint-disable-next-line react-hooks/purity
+      const worker = new Worker(`/whisper.worker.js?v=${Date.now()}`, {
         type: "module",
       });
 
@@ -383,9 +469,9 @@ export default function VideoSplitter() {
         }
       };
 
-      worker.postMessage({ audio: audioData });
+      worker.postMessage({ audio: audioData }, [audioData.buffer]);
     } catch (err: any) {
-      console.error("Transcription pipeline failed:", err);
+      console.error("Transcription pipeline execution failed:", err);
       setIsTranscribing(false);
       setTranscriptionStatus("");
       alert(`Failed to generate subtitles: ${err.message || String(err)}`);
@@ -477,7 +563,7 @@ export default function VideoSplitter() {
   const checkAudioTrack = async (ffmpeg: FFmpeg, filename: string): Promise<boolean> => {
     let hasAudio = false;
     const logHandler = ({ message }: { message: string }) => {
-      if (message.toLowerCase().includes("audio:")) {
+      if (/Stream #\d+:\d+.*Audio:/i.test(message)) {
         hasAudio = true;
       }
     };
@@ -485,13 +571,50 @@ export default function VideoSplitter() {
     try {
       // Use a valid null output with short duration so FFmpeg completes successfully with exit code 0
       // This prevents the WebAssembly instance from aborting and entering a corrupted state.
-      await ffmpeg.exec(["-t", "0.1", "-i", filename, "-c", "copy", "-f", "null", "-"]);
+      await ffmpeg.exec(["-t", "0.1", "-i", filename, "-c", "copy", "-f", "null", "null"]);
     } catch (e) {
       console.warn("Audio track check warning:", e);
     } finally {
       ffmpeg.off("log", logHandler);
     }
     return hasAudio;
+  };
+
+  const resizeImageToBlob = (file: File, targetWidth: number): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Failed to get canvas 2D context"));
+            return;
+          }
+          const scaleFactor = targetWidth / img.width;
+          const targetHeight = Math.round(img.height * scaleFactor);
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+          canvas.toBlob((blob) => {
+            if (blob) {
+              resolve(blob);
+            } else {
+              reject(new Error("Canvas toBlob returned null"));
+            }
+          }, "image/png");
+        };
+        img.onerror = () => {
+          reject(new Error("Failed to load image element"));
+        };
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => {
+        reject(new Error("Failed to read file"));
+      };
+      reader.readAsDataURL(file);
+    });
   };
 
   const handleSplit = async () => {
@@ -572,12 +695,27 @@ export default function VideoSplitter() {
         }
       }
 
-      // Write watermark if present
+      // Write watermark if present (resizing it in Javascript to prevent WebAssembly memory/scaling hangs)
       if (watermarkFile) {
-        console.log("Writing watermark image...");
+        console.log("Resizing and writing watermark image...");
         try {
-          await ffmpeg.writeFile("watermark.png", await fetchFile(watermarkFile));
-          console.log("Watermark image written successfully.");
+          const maxW = exportResolution === "360p" ? 360 : exportResolution === "480p" ? 480 : 720;
+          let targetW = maxW;
+          if (aspectRatio === "original" && videoDimensions.width > 0) {
+            targetW = videoDimensions.width;
+          } else if (videoDimensions.width > 0 && videoDimensions.height > 0) {
+            if (videoDimensions.width > videoDimensions.height) {
+              targetW = Math.min(videoDimensions.height, maxW);
+            } else {
+              targetW = Math.min(videoDimensions.width, maxW);
+            }
+          }
+          if (targetW % 2 !== 0) targetW--;
+          const wmWidth = Math.round(targetW * 0.18);
+
+          const resizedBlob = await resizeImageToBlob(watermarkFile, wmWidth);
+          await ffmpeg.writeFile("watermark.png", await fetchFile(resizedBlob));
+          console.log("Watermark image written successfully. Target width:", wmWidth);
         } catch (wmErr) {
           console.error("Failed to write watermark:", wmErr);
           throw new Error(`Failed to upload watermark: ${wmErr instanceof Error ? wmErr.message : wmErr}`);
@@ -658,7 +796,6 @@ export default function VideoSplitter() {
         let selectedHook: File | null = null;
         if (isHookEnabled && hookFiles.length > 0) {
           selectedHook = hookFiles[Math.floor(Math.random() * hookFiles.length)];
-          await ffmpeg.writeFile("hook.mp4", await fetchFile(selectedHook));
         }
 
         const hookDuration = selectedHook ? (hookDurations[selectedHook.name] || 2) : 0;
@@ -684,7 +821,7 @@ export default function VideoSplitter() {
           let hookIdx = -1;
           
           if (selectedHook) {
-            args.push("-i", "hook.mp4");
+            args.push("-i", selectedHook.name);
             hookIdx = inputIdx++;
           }
 
@@ -706,7 +843,7 @@ export default function VideoSplitter() {
 
           let watermarkIdx = -1;
           if (watermarkFile) {
-            args.push("-i", "watermark.png");
+            args.push("-loop", "1", "-i", "watermark.png");
             watermarkIdx = inputIdx++;
           }
 
@@ -754,25 +891,23 @@ export default function VideoSplitter() {
           let primaryCropW = primaryW;
           let primaryCropH = primaryH;
           
-          if (isAspectActive) {
-            if (isGenZSplit && bgVideoFile) {
-              const aspect = 9 / 8; // Gen Z stacked layout splits height in half, so aspect ratio of each screen is 9:8
-              if (primaryW / primaryH > aspect) {
-                primaryCropW = Math.round(primaryH * aspect);
-                primaryCropH = primaryH;
-              } else {
-                primaryCropW = primaryW;
-                primaryCropH = Math.round(primaryW / aspect);
-              }
+          if (isGenZSplit && bgVideoFile) {
+            const aspect = targetW / (targetH / 2);
+            if (primaryW / primaryH > aspect) {
+              primaryCropW = Math.round(primaryH * aspect);
+              primaryCropH = primaryH;
             } else {
-              const aspect = aspectRatio === "4:5" ? 4 / 5 : 9 / 16;
-              if (primaryW / primaryH > aspect) {
-                primaryCropW = Math.round(primaryH * aspect);
-                primaryCropH = primaryH;
-              } else {
-                primaryCropW = primaryW;
-                primaryCropH = Math.round(primaryW / aspect);
-              }
+              primaryCropW = primaryW;
+              primaryCropH = Math.round(primaryW / aspect);
+            }
+          } else if (isAspectActive) {
+            const aspect = aspectRatio === "4:5" ? 4 / 5 : 9 / 16;
+            if (primaryW / primaryH > aspect) {
+              primaryCropW = Math.round(primaryH * aspect);
+              primaryCropH = primaryH;
+            } else {
+              primaryCropW = primaryW;
+              primaryCropH = Math.round(primaryW / aspect);
             }
           }
           if (primaryCropW % 2 !== 0) primaryCropW--;
@@ -839,7 +974,7 @@ export default function VideoSplitter() {
           }
 
           // Primary video composition with chosen Framing Mode
-          if (isAspectActive) {
+          if (isAspectActive || (isGenZSplit && bgVideoFile)) {
             if (isGenZSplit && bgVideoFile) {
               let primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${targetH / 2}`;
               if (bypassCopyright) {
@@ -892,7 +1027,7 @@ export default function VideoSplitter() {
           // Background Video stack
           if (isGenZSplit && bgVideoFile && bgIdx !== -1) {
             filterParts.push(`[${bgIdx}:v]crop=${bgCropW}:${bgCropH},scale=${targetW}:${targetH / 2}[bg_v]`);
-            filterParts.push(`[primary_v][bg_v]vstack=inputs=2[main_v]`);
+            filterParts.push(`[primary_v][bg_v]vstack=inputs=2:shortest=1[main_v]`);
           } else {
             filterParts.push(`[primary_v]null[main_v]`);
           }
@@ -915,14 +1050,12 @@ export default function VideoSplitter() {
           // Watermark overlay
           let watermarkedStream = "[pre_composed_v]";
           if (watermarkIdx !== -1) {
-            const wmWidth = Math.round(targetW * 0.18);
-            filterParts.push(`[${watermarkIdx}:v]scale=${wmWidth}:-1[wm_scaled]`);
-            
             // Map percentage coordinates to output resolution
             const overlayX = `main_w*${watermarkX / 100}-overlay_w/2`;
             const overlayY = `main_h*${watermarkY / 100}-overlay_h/2`;
             
-            filterParts.push(`[pre_composed_v][wm_scaled]overlay=${overlayX}:${overlayY}[wm_v]`);
+            // The watermark is already resized to its final dimensions in JS, so overlay it directly!
+            filterParts.push(`[pre_composed_v][${watermarkIdx}:v]overlay=${overlayX}:${overlayY}:shortest=1[wm_v]`);
             watermarkedStream = "[wm_v]";
           }
 
@@ -978,14 +1111,15 @@ export default function VideoSplitter() {
 
           const outV = finalVideoLabel;
           const outA = (hookIdx !== -1) ? "[concat_a]" : "[main_a]";
-
           args.push(
             "-filter_complex", filterParts.join("; "),
             "-map", outV,
             "-map", outA,
             "-c:v", "libx264",
             "-preset", "ultrafast",
+            "-crf", "18",
             "-c:a", "aac",
+            "-b:a", "192k",
             "-avoid_negative_ts", "1",
             outputName
           );
@@ -1017,14 +1151,12 @@ export default function VideoSplitter() {
           throw readErr;
         }
 
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const blob = new Blob([data as any], { type: "video/mp4" });
         const url = URL.createObjectURL(blob);
         newResults.push({ name: outputName, url });
         
         await ffmpeg.deleteFile(outputName).catch(() => {});
-        if (selectedHook) {
-          await ffmpeg.deleteFile("hook.mp4").catch(() => {});
-        }
       }
       
       setResults(newResults);
@@ -1039,6 +1171,7 @@ export default function VideoSplitter() {
         if (bgVideoFile) await ffmpeg.deleteFile(bgVideoFile.name).catch(() => {});
         if (bgAudioFile) await ffmpeg.deleteFile(bgAudioFile.name).catch(() => {});
         if (watermarkFile) await ffmpeg.deleteFile("watermark.png").catch(() => {});
+        await ffmpeg.deleteFile("font.ttf").catch(() => {});
         if (isHookEnabled && hookFiles.length > 0) {
           for (const hook of hookFiles) {
             await ffmpeg.deleteFile(hook.name).catch(() => {});
