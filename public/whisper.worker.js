@@ -9,12 +9,33 @@ env.backends.onnx.wasm.wasmPaths = "/";
 let transcriberPromise = null;
 
 async function getTranscriber(progressCallback) {
-  if (!transcriberPromise) {
-    transcriberPromise = pipeline("automatic-speech-recognition", "Xenova/whisper-tiny.en", {
+  if (transcriberPromise) return transcriberPromise;
+
+  try {
+    console.log("Attempting to load Whisper model with WebGPU...");
+    // Use onnx-community model, which has optimized configurations for WebGPU/v3
+    const model = await pipeline("automatic-speech-recognition", "onnx-community/whisper-tiny.en", {
+      device: "webgpu",
       progress_callback: progressCallback,
     });
+    console.log("Whisper loaded successfully with WebGPU.");
+    transcriberPromise = Promise.resolve(model);
+    return model;
+  } catch (webgpuError) {
+    console.warn("WebGPU initialization failed. Falling back to CPU/WASM:", webgpuError);
+    try {
+      const model = await pipeline("automatic-speech-recognition", "Xenova/whisper-tiny.en", {
+        device: "wasm",
+        progress_callback: progressCallback,
+      });
+      console.log("Whisper loaded successfully with WASM.");
+      transcriberPromise = Promise.resolve(model);
+      return model;
+    } catch (wasmError) {
+      console.error("WASM fallback failed as well:", wasmError);
+      throw wasmError;
+    }
   }
-  return transcriberPromise;
 }
 
 self.addEventListener("message", async (event) => {

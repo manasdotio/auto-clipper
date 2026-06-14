@@ -54,6 +54,7 @@ export default function VideoSplitter() {
   const [aspectRatio, setAspectRatio] = useState<"9:16" | "4:5" | "original">("9:16");
   const [framingMode, setFramingMode] = useState<"crop" | "letterbox" | "blur">("crop");
   const [isReelFormat, setIsReelFormat] = useState(true);
+  const [exportResolution, setExportResolution] = useState<"360p" | "480p" | "720p">("480p");
   
   // New SRT Subtitle State
   const [srtFile, setSrtFile] = useState<File | null>(null);
@@ -117,7 +118,7 @@ export default function VideoSplitter() {
       if (!ffmpegRef.current) {
         ffmpegRef.current = new FFmpeg();
       }
-      const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.9/dist/umd";
+      const baseURL = "https://unpkg.com/@ffmpeg/core-mt@0.12.9/dist/umd";
       const ffmpeg = ffmpegRef.current;
       
       ffmpeg.on("log", ({ message }) => {
@@ -133,6 +134,7 @@ export default function VideoSplitter() {
       await ffmpeg.load({
         coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, "text/javascript"),
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
+        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, "text/javascript"),
       });
       
       setLoaded(true);
@@ -289,31 +291,45 @@ export default function VideoSplitter() {
     setTranscriptionStatus("Extracting audio from video...");
 
     try {
-      const arrayBuffer = await videoFile.arrayBuffer();
+      const ffmpeg = ffmpegRef.current;
+      if (!ffmpeg) {
+        throw new Error("FFmpeg is not loaded yet.");
+      }
+
+      setTranscriptionStatus("Writing video to workspace...");
+      await ffmpeg.writeFile(videoFile.name, await fetchFile(videoFile));
+
+      setTranscriptionStatus("Extracting & resampling audio...");
+      // Extract audio to 16kHz mono WAV format directly using FFmpeg
+      await ffmpeg.exec([
+        "-i", videoFile.name,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        "-ac", "1",
+        "audio.wav"
+      ]);
+
+      setTranscriptionStatus("Loading audio data...");
+      const wavData = await ffmpeg.readFile("audio.wav") as Uint8Array;
+
+      // Clean up the temporary WAV file
+      await ffmpeg.deleteFile("audio.wav").catch(() => {});
+
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioContextClass) {
         throw new Error("Web Audio API is not supported in this browser.");
       }
-      
+
       const audioCtx = new AudioContextClass();
-      setTranscriptionStatus("Decoding audio channels...");
-      
-      const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
-      setTranscriptionStatus("Resampling audio to 16kHz mono...");
-      
-      const offlineCtx = new OfflineAudioContext(
-        1,
-        Math.round(audioBuffer.duration * 16000),
-        16000
-      );
+      setTranscriptionStatus("Decoding resampled audio...");
 
-      const bufferSource = offlineCtx.createBufferSource();
-      bufferSource.buffer = audioBuffer;
-      bufferSource.connect(offlineCtx.destination);
-      bufferSource.start();
+      // Ensure we extract a clean, non-shared ArrayBuffer copy safely to prevent WebAudio decoding issues
+      const audioBufferCopy = new ArrayBuffer(wavData.byteLength);
+      new Uint8Array(audioBufferCopy).set(wavData);
 
-      const resampledBuffer = await offlineCtx.startRendering();
-      const audioData = resampledBuffer.getChannelData(0);
+      const audioBuffer = await audioCtx.decodeAudioData(audioBufferCopy);
+      const audioData = audioBuffer.getChannelData(0);
 
       setTranscriptionStatus("Loading Whisper AI model...");
 
@@ -695,18 +711,19 @@ export default function VideoSplitter() {
           }
 
           // Dimensions (ensuring divisibility by 2)
-          let targetW = 720;
-          let targetH = 1280;
+          const maxW = exportResolution === "360p" ? 360 : exportResolution === "480p" ? 480 : 720;
+          let targetW = maxW;
+          let targetH = aspectRatio === "4:5" ? Math.round(maxW * 5 / 4) : Math.round(maxW * 16 / 9);
           
           if (aspectRatio === "original" && videoDimensions.width > 0) {
             targetW = videoDimensions.width;
             targetH = videoDimensions.height;
           } else if (videoDimensions.width > 0 && videoDimensions.height > 0) {
-            // Cap the target width at 720 to prevent WebAssembly memory crashes
+            // Cap the target width based on exportResolution to prevent WebAssembly memory crashes
             if (videoDimensions.width > videoDimensions.height) {
-              targetW = Math.min(videoDimensions.height, 720);
+              targetW = Math.min(videoDimensions.height, maxW);
             } else {
-              targetW = Math.min(videoDimensions.width, 720);
+              targetW = Math.min(videoDimensions.width, maxW);
             }
             if (targetW % 2 !== 0) targetW--;
             
@@ -718,11 +735,11 @@ export default function VideoSplitter() {
           } else {
             // Fallback if dimensions are unavailable
             if (aspectRatio === "4:5") {
-              targetW = 720;
-              targetH = 900;
+              targetW = maxW;
+              targetH = Math.round(maxW * 5 / 4);
             } else {
-              targetW = 720;
-              targetH = 1280;
+              targetW = maxW;
+              targetH = Math.round(maxW * 16 / 9);
             }
           }
           
@@ -1646,6 +1663,38 @@ export default function VideoSplitter() {
                       </div>
                     </div>
 
+                    {/* Export Resolution Selector */}
+                    <div>
+                      <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2 flex items-center gap-1">
+                        Export Resolution
+                        <span className="text-[11px] font-normal text-text-2 font-sans lowercase">(lower = much faster)</span>
+                      </label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          { id: "360p", label: "360p", desc: "Super Fast (Web)", icon: "⚡" },
+                          { id: "480p", label: "480p", desc: "Fast (Default)", icon: "🚀" },
+                          { id: "720p", label: "720p", desc: "Normal (Slow)", icon: "📺" }
+                        ].map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setExportResolution(opt.id as "360p" | "480p" | "720p")}
+                            className={`p-2 rounded-xl border font-semibold text-left transition-all cursor-pointer flex flex-col justify-between h-auto min-h-[92px] py-2.5 px-2.5 ${
+                              exportResolution === opt.id
+                                ? "bg-accent/10 border-accent ring-1 ring-accent text-text-1"
+                                : "bg-surface border-border/85 text-text-1 hover:border-text-2 hover:bg-border/5"
+                            }`}
+                          >
+                            <span className="text-base">{opt.icon}</span>
+                            <div>
+                              <div className="text-xs font-black leading-tight">{opt.label}</div>
+                              <div className="text-[11px] text-text-2 font-normal leading-tight mt-0.5">{opt.desc}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
                     {/* Framing Layout Cards */}
                     {aspectRatio !== "original" && (
                       <div>
@@ -1739,7 +1788,10 @@ export default function VideoSplitter() {
                       </div>
 
                       <div className="flex flex-col justify-between">
-                        <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-1">Scene-Cut Splits</label>
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <label className="text-xs uppercase tracking-wider text-text-2 font-bold block">Scene-Cut Splits</label>
+                          <span className="bg-yellow-500/10 text-yellow-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">🐢 Slow on Web</span>
+                        </div>
                         <div className="flex items-center justify-between bg-surface border border-border px-2.5 py-1.5 rounded-lg h-[34px]">
                           <span className="text-xs text-text-2 font-semibold">Auto Transitions</span>
                           <label className="relative inline-flex items-center cursor-pointer shrink-0">
@@ -1790,7 +1842,10 @@ export default function VideoSplitter() {
                         <div className="flex gap-2">
                           <span className="text-sm mt-0.5">📱</span>
                           <div>
-                            <label className="text-xs font-bold text-text-1 block mb-0.5">The &quot;Gen Z Split&quot;</label>
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              <label className="text-xs font-bold text-text-1 block">The &quot;Gen Z Split&quot;</label>
+                              <span className="bg-yellow-500/10 text-yellow-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">🐢 Slow on Web</span>
+                            </div>
                             <p className="text-xs text-text-2 leading-tight max-w-[220px]">Stack gameplay/parkour background looping vertically</p>
                           </div>
                         </div>
@@ -1916,7 +1971,10 @@ export default function VideoSplitter() {
                       <div className="flex gap-2">
                         <span className="text-sm mt-0.5">🛡️</span>
                         <div>
-                          <label className="text-xs font-bold text-text-1 block mb-0.5">Bypass Duplication Filters</label>
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            <label className="text-xs font-bold text-text-1 block">Bypass Duplication Filters</label>
+                            <span className="bg-yellow-500/10 text-yellow-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">🐢 Slow on Web</span>
+                          </div>
                           <p className="text-xs text-text-2 leading-tight max-w-[220px]">
                             Shift speed (1.01x-1.03x), colors, and zoom to bypass copy-detectors
                           </p>
