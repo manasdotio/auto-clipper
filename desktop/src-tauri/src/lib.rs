@@ -235,6 +235,31 @@ fn select_video_file(app: AppHandle) -> Option<String> {
 }
 
 #[tauri::command]
+fn select_video_files(app: AppHandle) -> Option<Vec<String>> {
+    run_on_main_thread(&app, || {
+        rfd::FileDialog::new()
+            .add_filter("Video Files", &["mp4", "mkv", "avi", "mov", "webm"])
+            .pick_files()
+            .map(|paths| {
+                paths.iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect()
+            })
+    })
+}
+
+#[tauri::command]
+fn get_temp_directory() -> String {
+    std::env::temp_dir().to_string_lossy().into_owned()
+}
+
+#[tauri::command]
+fn check_file_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
+
+#[tauri::command]
 fn select_image_file(app: AppHandle) -> Option<String> {
     run_on_main_thread(&app, || {
         rfd::FileDialog::new()
@@ -363,6 +388,7 @@ async fn run_ffmpeg_command(app: AppHandle, args: Vec<String>) -> Result<String,
         let reader = BufReader::new(stderr);
         for line in reader.lines() {
             if let Ok(l) = line {
+                println!("FFmpeg: {}", l);
                 let _ = app_handle_clone.emit("ffmpeg-log", l);
             }
         }
@@ -422,6 +448,7 @@ pub fn run() {
             greet,
             check_ffmpeg_installed,
             select_video_file,
+            select_video_files,
             select_image_file,
             select_audio_file,
             select_srt_file,
@@ -435,7 +462,9 @@ pub fn run() {
             delete_file,
             read_text_file,
             write_binary_file,
-            get_video_url
+            get_video_url,
+            get_temp_directory,
+            check_file_exists
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -34,6 +34,22 @@ interface Subtitle {
 }
 
 export default function VideoSplitter() {
+  const [showHelpTooltips, setShowHelpTooltips] = useState<boolean>(true);
+
+  useEffect(() => {
+    const val = localStorage.getItem("showHelpTooltips");
+    if (val !== null) {
+      setShowHelpTooltips(val === "true");
+    }
+  }, []);
+
+  const handleToggleHelpTooltips = (enabled: boolean) => {
+    setShowHelpTooltips(enabled);
+    localStorage.setItem("showHelpTooltips", String(enabled));
+  };
+
+  const tooltip = (text: string) => showHelpTooltips ? text : undefined;
+
   const [loaded, setLoaded] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState("Loading FFmpeg...");
   
@@ -77,6 +93,12 @@ export default function VideoSplitter() {
 
   // Collapsible Settings sections
   const [openSection, setOpenSection] = useState<string>("basic");
+  const [sectionsState, setSectionsState] = useState<Record<string, boolean>>({
+    split: true,
+    framing: true,
+    viral: false,
+    overlays: false,
+  });
 
   // Viral Boost Features State
   const [isGenZSplit, setIsGenZSplit] = useState(false);
@@ -90,6 +112,12 @@ export default function VideoSplitter() {
   const [isBgAudioEnabled, setIsBgAudioEnabled] = useState(false);
   const [bgAudioFile, setBgAudioFile] = useState<File | null>(null);
   const [bgmVolume, setBgmVolume] = useState<number>(0.10);
+  const [bgAudioMode, setBgAudioMode] = useState<"mix" | "bgm_only">("mix");
+
+  // Sync isBgAudioEnabled with bgAudioFile
+  useEffect(() => {
+    setIsBgAudioEnabled(bgAudioFile !== null);
+  }, [bgAudioFile]);
   
   const [bypassCopyright, setBypassCopyright] = useState(false);
   const [startOffset, setStartOffset] = useState<number>(0);
@@ -418,11 +446,7 @@ export default function VideoSplitter() {
     try {
       setTranscriptionStatus("Loading Whisper AI model...");
 
-      // Instantiate Web Worker from the static public path with cache busting to force reloading edits
-      // eslint-disable-next-line react-hooks/purity
-      const worker = new Worker(`/whisper.worker.js?v=${Date.now()}`, {
-        type: "module",
-      });
+      const worker = new Worker(`/whisper.worker.js?v=${Date.now()}`, { type: "module" });
 
       worker.onerror = (err) => {
         console.error("Worker load/execution error:", err);
@@ -540,6 +564,11 @@ export default function VideoSplitter() {
       setIsReelFormat(true);
     }
     setOpenSection("basic");
+    setSectionsState((prev) => ({
+      ...prev,
+      split: true,
+      framing: true,
+    }));
   };
 
   const resetState = () => {
@@ -1015,7 +1044,9 @@ export default function VideoSplitter() {
           if (primaryHasAudio) {
             let primAF = `[${primaryIdx}:a]`;
             if (bypassCopyright) {
-              primAF += `atempo=${speed}`;
+              const pitchFactor = 1.01;
+              const tempoCombined = (Number(speed) / pitchFactor).toFixed(4);
+              primAF += `asetrate=44100*${pitchFactor},atempo=${tempoCombined},aresample=44100`;
             } else {
               primAF += `anull`;
             }
@@ -1035,7 +1066,12 @@ export default function VideoSplitter() {
           // Background Music overlay
           if (isBgAudioEnabled && bgAudioFile && bgAudioIdx !== -1) {
             filterParts.push(`[${bgAudioIdx}:a]volume=${bgmVolume}[bgm_a]`);
-            filterParts.push(`[primary_a][bgm_a]amix=inputs=2:duration=first[main_a]`);
+            if (bgAudioMode === 'bgm_only') {
+              filterParts.push(`[primary_a]volume=0[silent_primary_a]`);
+              filterParts.push(`[silent_primary_a][bgm_a]amix=inputs=2:duration=first[main_a]`);
+            } else {
+              filterParts.push(`[primary_a][bgm_a]amix=inputs=2:duration=first[main_a]`);
+            }
           } else {
             filterParts.push(`[primary_a]anull[main_a]`);
           }
@@ -1120,9 +1156,14 @@ export default function VideoSplitter() {
             "-crf", "18",
             "-c:a", "aac",
             "-b:a", "192k",
-            "-avoid_negative_ts", "1",
-            outputName
+            "-avoid_negative_ts", "1"
           );
+
+          if (bypassCopyright) {
+            args.push("-map_metadata", "-1");
+          }
+
+          args.push(outputName);
         }
 
         // Run segment processing
@@ -1537,17 +1578,6 @@ export default function VideoSplitter() {
                           <span className="text-white/85 text-[8.5px] flex items-center gap-0.5">🎵 Original Sound - Clipper</span>
                         </div>
 
-                        {/* Live Subtitle Overlay */}
-                        {activeSubtitle && (
-                          <div className="absolute bottom-[24%] left-0 right-0 px-4 text-center pointer-events-none z-30 animate-fade-in">
-                            <span 
-                              className="inline-block bg-black/75 text-white font-sans font-extrabold text-[11px] px-2.5 py-1 rounded-md border border-white/10 shadow-lg break-words max-w-[90%]"
-                              style={{ textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000' }}
-                            >
-                              {activeSubtitle.text}
-                            </span>
-                          </div>
-                        )}
 
                         {/* Dashed grid safe zone */}
                         <div className="absolute top-[16%] bottom-[18%] left-11 right-11 border-2 border-dashed border-amber-500 bg-amber-500/8 rounded flex items-center justify-center">
@@ -1608,17 +1638,6 @@ export default function VideoSplitter() {
                         </span>
                       </div>
                     )}
-                    {/* Live Subtitle Overlay */}
-                    {activeSubtitle && (
-                      <div className="absolute bottom-[8%] left-0 right-0 px-4 text-center pointer-events-none z-30 animate-fade-in">
-                        <span 
-                          className="inline-block bg-black/75 text-white font-sans font-extrabold text-[11px] px-2.5 py-1 rounded-md border border-white/10 shadow-lg break-words max-w-[90%]"
-                          style={{ textShadow: '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000' }}
-                        >
-                          {activeSubtitle.text}
-                        </span>
-                      </div>
-                    )}
                   </div>
                 )}
 
@@ -1639,6 +1658,7 @@ export default function VideoSplitter() {
                     <button
                       onClick={() => setShowSafeZone(!showSafeZone)}
                       disabled={!isReelFormat}
+                      title={tooltip("Show guides on the video showing where social media buttons (like Like, Comment, Share) will appear, so you can avoid putting text there.")}
                       className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all border cursor-pointer ${
                         !isReelFormat 
                           ? "opacity-30 cursor-not-allowed border-border text-text-2 bg-transparent" 
@@ -1654,6 +1674,7 @@ export default function VideoSplitter() {
                     <button 
                       onClick={resetState}
                       disabled={processing}
+                      title={tooltip("Clear the uploaded video, settings, and results so you can start over with a new video.")}
                       className="px-3 py-1.5 text-red text-xs font-bold hover:bg-red/10 border border-transparent hover:border-red/20 rounded-lg transition-colors cursor-pointer disabled:opacity-50"
                     >
                       Remove Video
@@ -1664,670 +1685,747 @@ export default function VideoSplitter() {
             )}
           </div>
 
-                 {/* Right panel - Settings */}
-          <div className="bg-surface-2 border-l border-border p-6 flex flex-col h-full min-h-[580px] justify-between">
+                        <div className="bg-surface-2 border-l border-border p-6 flex flex-col h-full min-h-[580px] justify-between">
             <div>
-              <h3 className="font-display font-extrabold text-sm text-text-1 mb-4 flex items-center gap-1.5">
-                <span>🛠️</span> Clipper Setup Panel
-              </h3>
-
-              {/* Tab Navigation */}
-              <div className="flex bg-surface border border-border p-1 rounded-xl mb-5 gap-1 shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => setOpenSection("basic")}
-                  className={`flex-1 py-2 rounded-lg font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                    openSection === "basic"
-                      ? "bg-accent text-white shadow-sm"
-                      : "text-text-2 hover:text-text-1 hover:bg-surface-2"
-                  }`}
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                  <span>1. Framing</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setOpenSection("viral")}
-                  className={`flex-1 py-2 rounded-lg font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                    openSection === "viral"
-                      ? "bg-accent text-white shadow-sm"
-                      : "text-text-2 hover:text-text-1 hover:bg-surface-2"
-                  }`}
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>2. Viral Boost</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setOpenSection("overlays")}
-                  className={`flex-1 py-2 rounded-lg font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                    openSection === "overlays"
-                      ? "bg-accent text-white shadow-sm"
-                      : "text-text-2 hover:text-text-1 hover:bg-surface-2"
-                  }`}
-                >
-                  <Type className="w-3.5 h-3.5" />
-                  <span>3. Overlays</span>
-                </button>
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="font-display font-extrabold text-sm text-text-1 flex items-center gap-1.5 select-none">
+                  <span>🛠️</span> Clipper Studio Setup
+                </h3>
+                <label className="relative inline-flex items-center cursor-pointer select-none" title={tooltip("Turn all helper tooltips on or off")}>
+                  <span className="text-[10px] font-bold text-text-2 mr-2">Help Tips:</span>
+                  <input 
+                    type="checkbox" 
+                    className="sr-only peer" 
+                    checked={showHelpTooltips}
+                    onChange={(e) => handleToggleHelpTooltips(e.target.checked)}
+                  />
+                  <div className="relative w-7 h-4 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-accent"></div>
+                </label>
               </div>
 
-              {/* Tab Contents */}
-              <div className="space-y-4">
-                
-                {/* TAB 1: FRAMING & DURATION */}
-                {openSection === "basic" && (
-                  <div className="space-y-4 animate-fade-in">
-                    {/* Platform Presets inside Framing */}
-                    <div className="bg-surface p-3.5 rounded-xl border border-border">
-                      <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2">Platform Presets</span>
-                      <div className="grid grid-cols-3 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => applyPreset("tiktok")}
-                          className={`py-1.5 px-1 rounded-lg font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1 border ${
-                            aspectRatio === "9:16" && segmentLengthMinutes === 1.0
-                              ? "bg-accent border-accent text-white"
-                              : "bg-surface-2 border-border text-text-1 hover:bg-border"
-                          }`}
-                        >
-                          TikTok
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => applyPreset("shorts")}
-                          className={`py-1.5 px-1 rounded-lg font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1 border ${
-                            aspectRatio === "9:16" && segmentLengthMinutes === 0.983
-                              ? "bg-red border-red text-white"
-                              : "bg-surface-2 border-border text-text-1 hover:bg-border"
-                          }`}
-                        >
-                          YT Shorts
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => applyPreset("fb_li")}
-                          className={`py-1.5 px-1 rounded-lg font-bold text-xs transition-all cursor-pointer flex items-center justify-center gap-1 border ${
-                            aspectRatio === "4:5"
-                              ? "bg-blue-600 border-blue-600 text-white"
-                              : "bg-surface-2 border-border text-text-1 hover:bg-border"
-                          }`}
-                        >
-                          FB / LI
-                        </button>
-                      </div>
-                    </div>
+              {/* Quick Platform Presets */}
+              <div className="bg-surface border border-border p-4 rounded-2xl mb-6 shadow-sm">
+                <span className="text-[11px] uppercase tracking-wider text-text-2 font-bold block mb-2.5">⚡ One-Click Presets</span>
+                <div className="grid grid-cols-3 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => applyPreset("tiktok")}
+                    title={tooltip("One-click setup: 9:16 tall vertical shape and 1-minute clips for TikTok.")}
+                    className={`py-2 px-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer flex flex-col items-center justify-center gap-1 border hover:scale-[1.02] active:scale-95 ${
+                      aspectRatio === "9:16" && segmentLengthMinutes === 1.0
+                        ? "bg-[#FE2C55]/10 border-[#FE2C55] text-[#FE2C55] ring-1 ring-[#FE2C55]/30"
+                        : "bg-surface-2 border-border text-text-1 hover:bg-border"
+                    }`}
+                  >
+                    <span className="text-base">🎵</span>
+                    <span>TikTok</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyPreset("shorts")}
+                    title={tooltip("One-click setup: 9:16 tall vertical shape and 59-second clips for YouTube Shorts.")}
+                    className={`py-2 px-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer flex flex-col items-center justify-center gap-1 border hover:scale-[1.02] active:scale-95 ${
+                      aspectRatio === "9:16" && segmentLengthMinutes === 0.983
+                        ? "bg-[#FF0000]/10 border-[#FF0000] text-[#FF0000] ring-1 ring-[#FF0000]/30"
+                        : "bg-surface-2 border-border text-text-1 hover:bg-border"
+                    }`}
+                  >
+                    <span className="text-base">📹</span>
+                    <span>YT Shorts</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyPreset("fb_li")}
+                    title={tooltip("One-click setup: 4:5 square-ish shape and 1-minute clips for Facebook & Instagram.")}
+                    className={`py-2 px-1.5 rounded-xl font-bold text-xs transition-all cursor-pointer flex flex-col items-center justify-center gap-1 border hover:scale-[1.02] active:scale-95 ${
+                      aspectRatio === "4:5"
+                        ? "bg-[#1877F2]/10 border-[#1877F2] text-[#1877F2] ring-1 ring-[#1877F2]/30"
+                        : "bg-surface-2 border-border text-text-1 hover:bg-border"
+                    }`}
+                  >
+                    <span className="text-base">📐</span>
+                    <span>FB / LI</span>
+                  </button>
+                </div>
+              </div>
 
-                    {/* Aspect Ratio Cards */}
-                    <div>
-                      <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2 flex items-center gap-1">
-                        Aspect Ratio
-                        <span className="text-[11px] font-normal text-text-2 font-sans lowercase">(determines layout shape)</span>
-                      </label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {[
-                          { id: "9:16", label: "9:16 Vertical", desc: "TikTok, Shorts, Reels", icon: "📱" },
-                          { id: "4:5", label: "4:5 Portrait", desc: "FB & LinkedIn Posts", icon: "📐" },
-                          { id: "original", label: "Original Ratio", desc: "Landscape / Raw Ratio", icon: "🖥️" }
-                        ].map((opt) => (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => {
-                              setAspectRatio(opt.id as "9:16" | "4:5" | "original");
-                              if (opt.id === "original") {
-                                setIsReelFormat(false);
-                              } else {
-                                setIsReelFormat(true);
-                              }
-                            }}
-                            className={`p-2 rounded-xl border font-semibold text-left transition-all cursor-pointer flex flex-col justify-between h-auto min-h-[92px] py-2.5 px-2.5 ${
-                              aspectRatio === opt.id
-                                ? "bg-accent/10 border-accent ring-1 ring-accent text-text-1"
-                                : "bg-surface border-border/85 text-text-1 hover:border-text-2 hover:bg-border/5"
-                            }`}
-                          >
-                            <span className="text-base">{opt.icon}</span>
-                            <div>
-                              <div className="text-xs font-black leading-tight">{opt.label}</div>
-                              <div className="text-[11px] text-text-2 font-normal leading-tight mt-0.5">{opt.desc}</div>
+              {/* Accordion Sections */}
+              <div className="space-y-3">
+
+                {/* SECTION 1: SPLIT SETTINGS */}
+                <div className="border border-border rounded-xl bg-surface overflow-hidden shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setSectionsState(prev => ({ ...prev, split: !prev.split }))}
+                    className={`w-full py-3 px-4 flex items-center justify-between text-left cursor-pointer transition-colors ${
+                      sectionsState.split ? "bg-surface-2 border-b border-border" : "hover:bg-surface-2"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">✂️</span>
+                      <span className="text-xs font-bold text-text-1 uppercase tracking-wider">1. Split Settings</span>
+                    </div>
+                    <span className="text-text-2">
+                      {sectionsState.split ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    </span>
+                  </button>
+
+                  {sectionsState.split && (
+                    <div className="p-4 space-y-4 animate-fade-in">
+                      {/* Segment Length Slider + Input */}
+                      <div className="bg-surface-2 p-3.5 rounded-xl border border-border/80" title={tooltip("Choose how long each video clip should be. Drag the slider to change the seconds/minutes.")}>
+                        <div className="flex justify-between items-center mb-2">
+                          <label className="text-xs uppercase tracking-wider text-text-2 font-bold">
+                            Segment Duration
+                          </label>
+                          <div className="flex items-center gap-1 bg-surface border border-border rounded-lg px-2 py-0.5">
+                            <input
+                              type="number"
+                              min={0.1}
+                              step={0.01}
+                              max={duration > 0 ? Math.ceil(duration / 60) : 100}
+                              value={segmentLengthMinutes}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                if (val > 0) {
+                                  setSegmentLengthMinutes(val);
+                                }
+                              }}
+                              className="w-12 bg-transparent text-xs text-text-1 font-bold border-none outline-none text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                            <span className="text-xs text-text-2 font-semibold">min</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <input 
+                            type="range" 
+                            min={0.1} 
+                            step={0.01}
+                            max={duration > 0 ? Math.ceil(duration / 60) : 10} 
+                            value={segmentLengthMinutes} 
+                            onChange={(e) => setSegmentLengthMinutes(Number(e.target.value))}
+                            className="flex-1 accent-accent h-1.5 bg-border rounded-lg appearance-none cursor-pointer"
+                          />
+                          <span className="text-xs text-text-2 font-mono shrink-0 w-10 text-right">
+                            {Math.floor(segmentLengthMinutes * 60)}s
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Output Prefix & Scene-Cut Splits */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div title={tooltip("Type a name for your saved clips. If you write 'part', your files will be saved as part_1.mp4, part_2.mp4, etc.")}>
+                          <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-1">Output Prefix</label>
+                          <div className="relative">
+                            <input 
+                              type="text" 
+                              value={prefix}
+                              onChange={(e) => setPrefix(e.target.value)}
+                              className="w-full px-2.5 py-1.5 bg-surface-2 border border-border rounded-lg focus:border-accent focus:ring-1 focus:ring-accent outline-none text-text-1 placeholder-text-2/30 text-xs transition-all font-bold"
+                              placeholder="e.g. clip"
+                            />
+                            <div className="absolute inset-y-0 right-2.5 flex items-center text-text-2 text-[10px] pointer-events-none font-mono font-bold">
+                              _1.mp4
                             </div>
-                          </button>
-                        ))}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col justify-between" title={tooltip("Automatically shift the clip's split point slightly so it cuts during silent pauses or scene transitions, rather than mid-sentence.")}>
+                          <div className="flex items-center gap-1 mb-1">
+                            <label className="text-xs uppercase tracking-wider text-text-2 font-bold block">Scene-Cut Splits</label>
+                          </div>
+                          <div className="flex items-center justify-between bg-surface-2 border border-border px-2.5 py-1.5 rounded-lg h-[34px]">
+                            <span className="text-[10px] text-text-2 font-bold uppercase tracking-wider">Auto Scene Cut</span>
+                            <label className="relative inline-flex items-center cursor-pointer shrink-0" title={tooltip(useSceneCut ? "Click to turn OFF auto scene cuts" : "Click to turn ON auto scene cuts")}>
+                              <input 
+                                type="checkbox" 
+                                className="sr-only peer" 
+                                checked={useSceneCut}
+                                onChange={(e) => setUseSceneCut(e.target.checked)}
+                              />
+                              <div className="w-7 h-4 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-accent"></div>
+                            </label>
+                          </div>
+                        </div>
                       </div>
                     </div>
+                  )}
+                </div>
 
-                    {/* Export Resolution Selector */}
-                    <div>
-                      <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2 flex items-center gap-1">
-                        Export Resolution
-                        <span className="text-[11px] font-normal text-text-2 font-sans lowercase">(lower = much faster)</span>
-                      </label>
-                      <div className="grid grid-cols-3 gap-2">
-                        {[
-                          { id: "360p", label: "360p", desc: "Super Fast (Web)", icon: "⚡" },
-                          { id: "480p", label: "480p", desc: "Fast (Default)", icon: "🚀" },
-                          { id: "720p", label: "720p", desc: "Normal (Slow)", icon: "📺" }
-                        ].map((opt) => (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => setExportResolution(opt.id as "360p" | "480p" | "720p")}
-                            className={`p-2 rounded-xl border font-semibold text-left transition-all cursor-pointer flex flex-col justify-between h-auto min-h-[92px] py-2.5 px-2.5 ${
-                              exportResolution === opt.id
-                                ? "bg-accent/10 border-accent ring-1 ring-accent text-text-1"
-                                : "bg-surface border-border/85 text-text-1 hover:border-text-2 hover:bg-border/5"
-                            }`}
-                          >
-                            <span className="text-base">{opt.icon}</span>
-                            <div>
-                              <div className="text-xs font-black leading-tight">{opt.label}</div>
-                              <div className="text-[11px] text-text-2 font-normal leading-tight mt-0.5">{opt.desc}</div>
-                            </div>
-                          </button>
-                        ))}
-                      </div>
+                {/* SECTION 2: LAYOUT & FRAMING */}
+                <div className="border border-border rounded-xl bg-surface overflow-hidden shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setSectionsState(prev => ({ ...prev, framing: !prev.framing }))}
+                    className={`w-full py-3 px-4 flex items-center justify-between text-left cursor-pointer transition-colors ${
+                      sectionsState.framing ? "bg-surface-2 border-b border-border" : "hover:bg-surface-2"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">📐</span>
+                      <span className="text-xs font-bold text-text-1 uppercase tracking-wider">2. Layout & Framing</span>
                     </div>
+                    <div className="flex items-center gap-2">
+                      {(aspectRatio !== "original" || framingMode !== "crop" || exportResolution !== "480p") && (
+                        <span className="bg-accent/15 text-accent text-[9px] font-black px-2 py-0.5 rounded-full border border-accent/20">
+                          Custom
+                        </span>
+                      )}
+                      <span className="text-text-2">
+                        {sectionsState.framing ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                      </span>
+                    </div>
+                  </button>
 
-                    {/* Framing Layout Cards */}
-                    {aspectRatio !== "original" && (
+                  {sectionsState.framing && (
+                    <div className="p-4 space-y-4 animate-fade-in">
+                      {/* Aspect Ratio Cards */}
                       <div>
                         <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2 flex items-center gap-1">
-                          Framing Layout
-                          <span className="text-[11px] font-normal text-text-2 font-sans lowercase">(how video fits canvas)</span>
+                          Aspect Ratio
+                          <span className="text-[10px] font-normal text-text-2 font-sans lowercase">(determines layout shape)</span>
                         </label>
                         <div className="grid grid-cols-3 gap-2">
                           {[
-                            { id: "crop", label: "Center-Crop", desc: "Zoom & fill vertical frame", icon: "✂️" },
-                            { id: "letterbox", label: "Letterbox", desc: "Fit with black padding bars", icon: "🔳" },
-                            { id: "blur", label: "Ambient Blur", desc: "Fit with blurred background", icon: "✨" }
+                            { id: "9:16", label: "9:16", desc: "Reels/TikToks", icon: "📱", tooltip: "Perfect shape for TikTok, YouTube Shorts, and Instagram Reels (Portrait video)." },
+                            { id: "4:5", label: "4:5", desc: "Social Feeds", icon: "📐", tooltip: "Perfect shape for Facebook and Instagram feed posts (Square-ish video)." },
+                            { id: "original", label: "Original", desc: "No Crop", icon: "🖥️", tooltip: "Keep the video's original shape (Landscape/Horizontal format)." }
                           ].map((opt) => (
                             <button
                               key={opt.id}
                               type="button"
-                              onClick={() => setFramingMode(opt.id as "crop" | "letterbox" | "blur")}
-                              className={`p-2 rounded-xl border font-semibold text-left transition-all cursor-pointer flex flex-col justify-between h-auto min-h-[92px] py-2.5 px-2.5 ${
-                                framingMode === opt.id
+                              onClick={() => {
+                                setAspectRatio(opt.id as "9:16" | "4:5" | "original");
+                                if (opt.id === "original") {
+                                  setIsReelFormat(false);
+                                } else {
+                                  setIsReelFormat(true);
+                                }
+                              }}
+                              title={tooltip(opt.tooltip)}
+                              className={`p-2 rounded-xl border font-semibold text-left transition-all cursor-pointer flex flex-col justify-between h-auto min-h-[84px] py-2 px-2 relative ${
+                                aspectRatio === opt.id
                                   ? "bg-accent/10 border-accent ring-1 ring-accent text-text-1"
-                                  : "bg-surface border-border/85 text-text-1 hover:border-text-2 hover:bg-border/5"
+                                  : "bg-surface-2 border-border text-text-1 hover:border-text-2 hover:bg-border/5"
                               }`}
                             >
-                              <span className="text-base">{opt.icon}</span>
+                              <span className="text-sm">{opt.icon}</span>
                               <div>
-                                <div className="text-xs font-black leading-tight">{opt.label}</div>
-                                <div className="text-[11px] text-text-2 font-normal leading-tight mt-0.5">{opt.desc}</div>
+                                <div className="text-[11px] font-black leading-tight">{opt.label}</div>
+                                <div className="text-[9px] text-text-2 font-normal leading-tight mt-0.5">{opt.desc}</div>
                               </div>
+                              {aspectRatio === opt.id && (
+                                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-accent"></span>
+                              )}
                             </button>
                           ))}
                         </div>
                       </div>
-                    )}
 
-                    {/* Segment Length Slider + Input */}
-                    <div className="bg-surface p-3.5 rounded-xl border border-border/80">
-                      <div className="flex justify-between items-center mb-2">
-                        <label className="text-xs uppercase tracking-wider text-text-2 font-bold flex items-center gap-1">
-                          Segment Duration
-                        </label>
-                        <div className="flex items-center gap-1 bg-surface-2 border border-border rounded-lg px-2 py-0.5">
-                          <input
-                            type="number"
-                            min={0.1}
-                            step={0.01}
-                            max={duration > 0 ? Math.ceil(duration / 60) : 100}
-                            value={segmentLengthMinutes}
-                            onChange={(e) => {
-                              const val = Number(e.target.value);
-                              if (val > 0) {
-                                setSegmentLengthMinutes(val);
-                              }
-                            }}
-                            className="w-12 bg-transparent text-xs text-text-1 font-bold border-none outline-none text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                          />
-                          <span className="text-xs text-text-2 font-semibold font-sans">min</span>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <input 
-                          type="range" 
-                          min={0.1} 
-                          step={0.01}
-                          max={duration > 0 ? Math.ceil(duration / 60) : 10} 
-                          value={segmentLengthMinutes} 
-                          onChange={(e) => setSegmentLengthMinutes(Number(e.target.value))}
-                          className="flex-1 accent-accent h-1.5 bg-border rounded-lg appearance-none cursor-pointer"
-                        />
-                        <span className="text-xs text-text-2 font-mono shrink-0 w-10 text-right">
-                          {Math.floor(segmentLengthMinutes * 60)}s
-                        </span>
-                      </div>
-                    </div>
-
-                    {/* Output Prefix & Scene-Cut Splits */}
-                    <div className="grid grid-cols-2 gap-3">
+                      {/* Export Resolution Selector */}
                       <div>
-                        <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-1">Output Prefix</label>
-                        <div className="relative">
-                          <input 
-                            type="text" 
-                            value={prefix}
-                            onChange={(e) => setPrefix(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg focus:border-accent focus:ring-1 focus:ring-accent outline-none text-text-1 placeholder-text-2/30 text-xs transition-all font-bold"
-                            placeholder="e.g. clip"
-                          />
-                          <div className="absolute inset-y-0 right-2.5 flex items-center text-text-2 text-xs pointer-events-none font-mono font-bold">
-                            _1.mp4
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col justify-between">
-                        <div className="flex items-center gap-1.5 mb-1">
-                          <label className="text-xs uppercase tracking-wider text-text-2 font-bold block">Scene-Cut Splits</label>
-                          <span className="bg-yellow-500/10 text-yellow-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">🐢 Slow on Web</span>
-                        </div>
-                        <div className="flex items-center justify-between bg-surface border border-border px-2.5 py-1.5 rounded-lg h-[34px]">
-                          <span className="text-xs text-text-2 font-semibold">Auto Transitions</span>
-                          <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                            <input 
-                              type="checkbox" 
-                              className="sr-only peer" 
-                              checked={useSceneCut}
-                              onChange={(e) => setUseSceneCut(e.target.checked)}
-                            />
-                            <div className="w-7 h-4 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-accent"></div>
-                          </label>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB 2: VIRAL BOOST FEATURES */}
-                {openSection === "viral" && (
-                  <div className="space-y-3 animate-fade-in">
-                    {/* Intro trimmer card */}
-                    <div className="bg-surface border border-border p-3 rounded-xl transition-all hover:bg-border/5 flex flex-col gap-2">
-                      <div className="flex justify-between items-center">
-                        <div className="flex gap-2">
-                          <span className="text-sm mt-0.5">⏱️</span>
-                          <div>
-                            <label className="text-xs font-bold text-text-1 block mb-0.5">Start Offset (Intro Trimmer)</label>
-                            <p className="text-xs text-text-2 leading-tight max-w-[220px]">Strip stream intro or loading screens before splitting</p>
-                          </div>
-                        </div>
-                        <div className="relative w-20 shrink-0">
-                          <input
-                            type="number"
-                            min={0}
-                            max={duration > 0 ? Math.floor(duration - 1) : 1000}
-                            value={startOffset}
-                            onChange={(e) => setStartOffset(Math.max(0, Number(e.target.value)))}
-                            className="w-full pr-5 pl-1.5 py-1 bg-surface-2 border border-border rounded-lg focus:border-accent outline-none text-text-1 text-xs font-bold text-right"
-                          />
-                          <span className="absolute right-1.5 inset-y-0 flex items-center text-xs text-text-2 font-mono pointer-events-none font-bold">s</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* The "Gen Z Split" Card */}
-                    <div className="bg-surface border border-border p-3 rounded-xl transition-all hover:bg-border/5 flex flex-col gap-2">
-                      <div className="flex justify-between items-start">
-                        <div className="flex gap-2">
-                          <span className="text-sm mt-0.5">📱</span>
-                          <div>
-                            <div className="flex items-center gap-1.5 mb-0.5">
-                              <label className="text-xs font-bold text-text-1 block">The &quot;Gen Z Split&quot;</label>
-                              <span className="bg-yellow-500/10 text-yellow-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">🐢 Slow on Web</span>
-                            </div>
-                            <p className="text-xs text-text-2 leading-tight max-w-[220px]">Stack gameplay/parkour background looping vertically</p>
-                          </div>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer mt-1 shrink-0">
-                          <input 
-                            type="checkbox" 
-                            className="sr-only peer" 
-                            checked={isGenZSplit}
-                            disabled={!isReelFormat}
-                            onChange={(e) => {
-                              setIsGenZSplit(e.target.checked);
-                              if (e.target.checked) {
-                                setIsReelFormat(true);
-                                setAspectRatio("9:16");
-                              }
-                            }}
-                          />
-                          <div className="w-8 h-4.5 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-accent peer-disabled:opacity-40"></div>
+                        <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2 flex items-center gap-1">
+                          Export Resolution
+                          <span className="text-[10px] font-normal text-text-2 font-sans lowercase">(lower = faster)</span>
                         </label>
-                      </div>
-                      
-                      {isGenZSplit && (
-                        <div className="mt-1 bg-surface-2 p-2.5 rounded-lg border border-border space-y-2 animate-fade-in">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[11px] font-bold text-text-2 uppercase tracking-wider">Secondary Background Video</span>
-                            <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface hover:bg-accent-glow py-2.5 px-3 rounded-lg cursor-pointer transition-all text-center">
-                              <input
-                                type="file"
-                                accept="video/*"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file) setBgVideoFile(file);
-                                }}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                              />
-                              <UploadCloud className="w-4 h-4 text-accent mb-0.5" />
-                              <span className="text-xs text-text-1 font-semibold">Choose video file</span>
-                            </label>
-                          </div>
-                          {bgVideoFile && (
-                            <div className="flex justify-between items-center bg-surface p-1.5 rounded-lg border border-border text-xs">
-                              <span className="truncate text-text-1 font-medium max-w-[170px]" title={bgVideoFile.name}>
-                                📄 {bgVideoFile.name}
-                              </span>
-                              <button
-                                onClick={() => setBgVideoFile(null)}
-                                className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface-2 cursor-pointer"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Viral Hooks Card */}
-                    <div className="bg-surface border border-border p-3 rounded-xl transition-all hover:bg-border/5 flex flex-col gap-2">
-                      <div className="flex justify-between items-start">
-                        <div className="flex gap-2">
-                          <span className="text-sm mt-0.5">🪝</span>
-                          <div>
-                            <label className="text-xs font-bold text-text-1 block mb-0.5">Viral Hooks Randomizer</label>
-                            <p className="text-xs text-text-2 leading-tight max-w-[220px]">Prepend a random short (1-3s) clip before each part</p>
-                          </div>
-                        </div>
-                        <label className="relative inline-flex items-center cursor-pointer mt-1 shrink-0">
-                          <input 
-                            type="checkbox" 
-                            className="sr-only peer" 
-                            checked={isHookEnabled}
-                            onChange={(e) => setIsHookEnabled(e.target.checked)}
-                          />
-                          <div className="w-8 h-4.5 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-accent"></div>
-                        </label>
-                      </div>
-                      
-                      {isHookEnabled && (
-                        <div className="mt-1 bg-surface-2 p-2.5 rounded-lg border border-border space-y-2.5 animate-fade-in">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[11px] font-bold text-text-2 uppercase tracking-wider">Upload Hooks (Multiple OK)</span>
-                            <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface hover:bg-accent-glow py-2.5 px-3 rounded-lg cursor-pointer transition-all text-center">
-                              <input
-                                type="file"
-                                multiple
-                                accept="video/*"
-                                onChange={handleHookFilesChange}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                              />
-                              <UploadCloud className="w-4 h-4 text-accent mb-0.5" />
-                              <span className="text-xs text-text-1 font-semibold">Choose video files</span>
-                            </label>
-                          </div>
-                          
-                          {hookFiles.length > 0 && (
-                            <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
-                              {hookFiles.map((file, idx) => (
-                                <div key={idx} className="flex justify-between items-center bg-surface p-1 rounded-lg border border-border text-xs">
-                                  <span className="truncate text-text-1 font-medium max-w-[140px]" title={file.name}>
-                                    📄 {file.name}
-                                  </span>
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-text-2 text-[11px] bg-surface-2 px-1.5 py-0.5 rounded font-bold border border-border">
-                                      {hookDurations[file.name] ? `${hookDurations[file.name].toFixed(1)}s` : "..."}
-                                    </span>
-                                    <button
-                                      onClick={() => handleRemoveHook(idx)}
-                                      className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface-2 cursor-pointer"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Bypass Copyright Card */}
-                    <div className="bg-surface border border-border p-3 rounded-xl transition-all hover:bg-border/5 flex justify-between items-center">
-                      <div className="flex gap-2">
-                        <span className="text-sm mt-0.5">🛡️</span>
-                        <div>
-                          <div className="flex items-center gap-1.5 mb-0.5">
-                            <label className="text-xs font-bold text-text-1 block">Bypass Duplication Filters</label>
-                            <span className="bg-yellow-500/10 text-yellow-500 text-[9px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">🐢 Slow on Web</span>
-                          </div>
-                          <p className="text-xs text-text-2 leading-tight max-w-[220px]">
-                            Shift speed (1.01x-1.03x), colors, and zoom to bypass copy-detectors
-                          </p>
-                        </div>
-                      </div>
-                      <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                        <input 
-                          type="checkbox" 
-                          className="sr-only peer" 
-                          checked={bypassCopyright}
-                          onChange={(e) => setBypassCopyright(e.target.checked)}
-                        />
-                        <div className="w-8 h-4.5 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-accent"></div>
-                      </label>
-                    </div>
-                  </div>
-                )}
-
-                {/* TAB 3: TEXT, SUBTITLES & LOGO OVERLAYS */}
-                {openSection === "overlays" && (
-                  <div className="space-y-3 animate-fade-in">
-                    {/* Text Overlays Card */}
-                    <div className="bg-surface border border-border p-3 rounded-xl space-y-3">
-                      <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-1 flex items-center gap-1">
-                        📝 Title Overlays
-                      </span>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-[11px] font-bold text-text-2 uppercase block mb-1">Top Text</label>
-                          <input 
-                            type="text" 
-                            value={topText}
-                            onChange={(e) => setTopText(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-surface-2 border border-border rounded-lg focus:border-accent focus:ring-1 focus:ring-accent outline-none text-text-1 placeholder-text-2/30 text-xs transition-all font-bold"
-                            placeholder="e.g. Part {n}"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-[11px] font-bold text-text-2 uppercase block mb-1">Bottom Text</label>
-                          <input 
-                            type="text" 
-                            value={bottomText}
-                            onChange={(e) => setBottomText(e.target.value)}
-                            className="w-full px-2.5 py-1.5 bg-surface-2 border border-border rounded-lg focus:border-accent focus:ring-1 focus:ring-accent outline-none text-text-1 placeholder-text-2/30 text-xs transition-all font-bold"
-                            placeholder="e.g. Subscribe!"
-                          />
-                        </div>
-                      </div>
-                      <div className="bg-surface-2 border border-border p-2 rounded-lg flex items-start gap-2 text-xs text-text-2 leading-relaxed font-sans">
-                        <Info className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5" />
-                        <p>Use <code className="text-accent font-mono font-bold">{`{n}`}</code> to insert the dynamic part number automatically.</p>
-                      </div>
-                    </div>
-
-                    {/* Auto-BGM Card */}
-                    <div className="bg-surface border border-border p-3 rounded-xl flex flex-col gap-2">
-                      <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-1 flex items-center gap-1">
-                        🎵 Background Music (Auto-BGM)
-                      </span>
-                      <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2.5 px-3 rounded-lg cursor-pointer transition-all text-center">
-                        <input
-                          type="file"
-                          accept="audio/*"
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            if (file) setBgAudioFile(file);
-                          }}
-                          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                        />
-                        <Music className="w-4 h-4 text-accent mb-0.5" />
-                        <span className="text-xs text-text-1 font-semibold font-sans">Choose audio file</span>
-                      </label>
-                      
-                      {bgAudioFile && (
-                        <div className="space-y-2 mt-1">
-                          <div className="flex justify-between items-center bg-surface-2 p-1.5 rounded-lg border border-border text-xs">
-                            <span className="truncate text-text-1 font-medium max-w-[170px]" title={bgAudioFile.name}>
-                              🎵 {bgAudioFile.name}
-                            </span>
+                        <div className="grid grid-cols-3 gap-2">
+                          {[
+                            { id: "360p", label: "360p", desc: "Super Fast", icon: "⚡", tooltip: "Lower quality but splits and exports super fast. Good for checking results." },
+                            { id: "480p", label: "480p", desc: "Default", icon: "🚀", tooltip: "Standard quality. Balanced speed and sharpness." },
+                            { id: "720p", label: "720p", desc: "Normal", icon: "📺", tooltip: "High definition. Looks sharp but takes longer to process." }
+                          ].map((opt) => (
                             <button
-                              onClick={() => setBgAudioFile(null)}
-                              className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface cursor-pointer"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center text-xs font-bold uppercase tracking-wider text-text-2 mb-1">
-                              <span>Volume</span>
-                              <span className="text-accent">{Math.round(bgmVolume * 100)}%</span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <Volume2 className="w-3 h-3 text-text-2" />
-                              <input 
-                                type="range" 
-                                min={0} 
-                                max={1} 
-                                step={0.01}
-                                value={bgmVolume} 
-                                onChange={(e) => setBgmVolume(Number(e.target.value))}
-                                className="flex-1 accent-accent h-1.5 bg-border rounded-lg appearance-none cursor-pointer"
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Subtitles & Watermark grid */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-surface border border-border p-3 rounded-xl flex flex-col justify-between">
-                        <div>
-                          <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2">📝 Subtitles (.SRT)</span>
-                          <div className="grid grid-cols-2 gap-2">
-                            <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2 px-1 rounded-lg cursor-pointer transition-all text-center h-[54px]">
-                              <input
-                                type="file"
-                                accept=".srt"
-                                onChange={handleSrtChange}
-                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                              />
-                              <Type className="w-4 h-4 text-accent mb-0.5" />
-                              <span className="text-[10px] text-text-1 font-semibold leading-tight">Choose SRT</span>
-                            </label>
-                            
-                            <button
+                              key={opt.id}
                               type="button"
-                              onClick={generateCaptions}
-                              disabled={!videoFile || isTranscribing}
-                              className="flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2 px-1 rounded-lg cursor-pointer transition-all text-center h-[54px] disabled:opacity-40 disabled:cursor-not-allowed"
+                              onClick={() => setExportResolution(opt.id as "360p" | "480p" | "720p")}
+                              title={tooltip(opt.tooltip)}
+                              className={`p-2 rounded-xl border font-semibold text-left transition-all cursor-pointer flex flex-col justify-between h-auto min-h-[84px] py-2 px-2 relative ${
+                                exportResolution === opt.id
+                                  ? "bg-accent/10 border-accent ring-1 ring-accent text-text-1"
+                                  : "bg-surface-2 border-border text-text-1 hover:border-text-2 hover:bg-border/5"
+                              }`}
                             >
-                              <Sparkles className="w-4 h-4 text-accent mb-0.5 animate-pulse" />
-                              <span className="text-[10px] text-text-1 font-semibold leading-tight">
-                                {isTranscribing ? "Generating..." : "Auto AI SRT"}
-                              </span>
+                              <span className="text-sm">{opt.icon}</span>
+                              <div>
+                                <div className="text-[11px] font-black leading-tight">{opt.label}</div>
+                                <div className="text-[9px] text-text-2 font-normal leading-tight mt-0.5">{opt.desc}</div>
+                              </div>
+                              {exportResolution === opt.id && (
+                                <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-accent"></span>
+                              )}
                             </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Framing Layout Cards */}
+                      {aspectRatio !== "original" && (
+                        <div>
+                          <label className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2 flex items-center gap-1">
+                            Framing Layout
+                            <span className="text-[10px] font-normal text-text-2 font-sans lowercase">(how video fits)</span>
+                          </label>
+                          <div className="grid grid-cols-3 gap-2">
+                            {[
+                              { id: "crop", label: "Center-Crop", desc: "Fill Frame", icon: "✂️", tooltip: "Fills the entire screen by cutting off the left and right sides of your horizontal video." },
+                              { id: "letterbox", label: "Letterbox", desc: "Black Bars", icon: "🔳", tooltip: "Fits the whole horizontal video on screen by adding black bars at the top and bottom." },
+                              { id: "blur", label: "Ambient Blur", desc: "Blur Padding", icon: "✨", tooltip: "Fits the whole horizontal video on screen and fills top/bottom spaces with a beautiful blurred version of it." }
+                            ].map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => setFramingMode(opt.id as "crop" | "letterbox" | "blur")}
+                                title={tooltip(opt.tooltip)}
+                                className={`p-2 rounded-xl border font-semibold text-left transition-all cursor-pointer flex flex-col justify-between h-auto min-h-[84px] py-2 px-2 relative ${
+                                  framingMode === opt.id
+                                    ? "bg-accent/10 border-accent ring-1 ring-accent text-text-1"
+                                    : "bg-surface-2 border-border text-text-1 hover:border-text-2 hover:bg-border/5"
+                                }`}
+                              >
+                                <span className="text-sm">{opt.icon}</span>
+                                <div>
+                                  <div className="text-[11px] font-black leading-tight">{opt.label}</div>
+                                  <div className="text-[9px] text-text-2 font-normal leading-tight mt-0.5">{opt.desc}</div>
+                                </div>
+                                {framingMode === opt.id && (
+                                  <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-accent"></span>
+                                )}
+                              </button>
+                            ))}
                           </div>
                         </div>
-                        {isTranscribing && (
-                          <div className="mt-2 p-2 bg-accent-glow border border-accent/20 rounded-lg text-[10px] text-text-1 flex flex-col gap-1.5 animate-fade-in">
-                            <div className="flex justify-between font-bold">
-                              <span className="animate-pulse">{transcriptionStatus}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* SECTION 3: VIRAL BOOST */}
+                {(() => {
+                  const activeViralCount = [
+                    startOffset > 0,
+                    isGenZSplit && bgVideoFile !== null,
+                    isHookEnabled && hookFiles.length > 0,
+                    bypassCopyright,
+                  ].filter(Boolean).length;
+
+                  return (
+                    <div className="border border-border rounded-xl bg-surface overflow-hidden shadow-sm">
+                      <button
+                        type="button"
+                        onClick={() => setSectionsState(prev => ({ ...prev, viral: !prev.viral }))}
+                        className={`w-full py-3 px-4 flex items-center justify-between text-left cursor-pointer transition-colors ${
+                          sectionsState.viral ? "bg-surface-2 border-b border-border" : "hover:bg-surface-2"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">🚀</span>
+                          <span className="text-xs font-bold text-text-1 uppercase tracking-wider">3. Viral Boost</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {activeViralCount > 0 && (
+                            <span className="bg-purple-500/15 text-purple-400 text-[9px] font-black px-2 py-0.5 rounded-full border border-purple-500/20">
+                              {activeViralCount} active
+                            </span>
+                          )}
+                          <span className="text-text-2">
+                            {sectionsState.viral ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </span>
+                        </div>
+                      </button>
+
+                      {sectionsState.viral && (
+                        <div className="p-4 space-y-3 animate-fade-in">
+                          {/* Intro trimmer card */}
+                          <div className="bg-surface-2 border border-border p-3 rounded-xl hover:bg-border/5 flex flex-col gap-2" title={tooltip("Skip the start of your video by a chosen number of seconds to remove intros/loadings.")}>
+                            <div className="flex justify-between items-center">
+                              <div className="flex gap-2">
+                                <span className="text-sm mt-0.5">⏱️</span>
+                                <div>
+                                  <label className="text-xs font-bold text-text-1 block mb-0.5">Start Offset (Intro Trimmer)</label>
+                                  <p className="text-[10px] text-text-2 leading-tight max-w-[200px]">Skip intro/loading screens before splitting</p>
+                                </div>
+                              </div>
+                              <div className="relative w-20 shrink-0">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={duration > 0 ? Math.floor(duration - 1) : 1000}
+                                  value={startOffset}
+                                  onChange={(e) => setStartOffset(Math.max(0, Number(e.target.value)))}
+                                  className="w-full pr-5 pl-1.5 py-1 bg-surface border border-border rounded-lg focus:border-accent outline-none text-text-1 text-xs font-bold text-right"
+                                />
+                                <span className="absolute right-1.5 inset-y-0 flex items-center text-xs text-text-2 font-mono pointer-events-none font-bold">s</span>
+                              </div>
                             </div>
-                            {transcriptionStatus.includes("Downloading") && (
-                              <div className="w-full bg-border rounded-full h-1">
-                                <div 
-                                  className="bg-accent h-1 rounded-full transition-all duration-300" 
-                                  style={{ width: `${transcriptionProgress}%` }}
-                                ></div>
+                          </div>
+
+                          {/* The "Gen Z Split" Card */}
+                          <div className="bg-surface-2 border border-border p-3 rounded-xl hover:bg-border/5 flex flex-col gap-2" title={tooltip("Stack gameplay or looping background videos at the bottom of portrait layouts to keep viewers' attention.")}>
+                            <div className="flex justify-between items-start">
+                              <div className="flex gap-2">
+                                <span className="text-sm mt-0.5">📱</span>
+                                <div>
+                                  <div className="flex items-center gap-1.5 mb-0.5">
+                                    <label className="text-xs font-bold text-text-1 block">The &quot;Gen Z Split&quot;</label>
+                                    <span className="bg-yellow-500/10 text-yellow-500 text-[8px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">Slow</span>
+                                  </div>
+                                  <p className="text-[10px] text-text-2 leading-tight max-w-[200px]">Stack gameplay/parkour background looping vertically</p>
+                                </div>
+                              </div>
+                              <label className="relative inline-flex items-center cursor-pointer mt-1 shrink-0" title={tooltip(isGenZSplit ? "Click to turn OFF gameplay split screen" : "Click to turn ON gameplay split screen")}>
+                                <input 
+                                  type="checkbox" 
+                                  className="sr-only peer" 
+                                  checked={isGenZSplit}
+                                  disabled={!isReelFormat}
+                                  onChange={(e) => {
+                                    setIsGenZSplit(e.target.checked);
+                                    if (e.target.checked) {
+                                      setIsReelFormat(true);
+                                      setAspectRatio("9:16");
+                                    }
+                                  }}
+                                />
+                                <div className="w-8 h-4.5 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-accent peer-disabled:opacity-40"></div>
+                              </label>
+                            </div>
+                            
+                            {isGenZSplit && (
+                              <div className="mt-1 bg-surface p-2.5 rounded-lg border border-border space-y-2 animate-fade-in">
+                                <div className="flex flex-col gap-1" title={tooltip("Select the gameplay or parkour video that will play at the bottom of the screen.")}>
+                                  <span className="text-[9px] font-bold text-text-2 uppercase tracking-wider">Secondary Background Video</span>
+                                  {!bgVideoFile ? (
+                                    <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2.5 px-3 rounded-lg cursor-pointer transition-all text-center group">
+                                      <input
+                                        type="file"
+                                        accept="video/*"
+                                        onChange={(e) => {
+                                          const file = e.target.files?.[0];
+                                          if (file) setBgVideoFile(file);
+                                        }}
+                                        className="hidden"
+                                      />
+                                      <UploadCloud className="w-4 h-4 text-accent mb-0.5 group-hover:scale-115 transition-transform" />
+                                      <span className="text-[10px] text-text-1 font-bold">Choose Gameplay Video</span>
+                                    </label>
+                                  ) : (
+                                    <div className="flex justify-between items-center bg-surface-2 p-1.5 rounded-lg border border-border text-xs">
+                                      <span className="truncate text-text-1 font-medium max-w-[170px]" title={bgVideoFile.name}>
+                                        🎮 {bgVideoFile.name}
+                                      </span>
+                                      <button
+                                        onClick={() => setBgVideoFile(null)}
+                                        className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface cursor-pointer"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             )}
                           </div>
-                        )}
-                        {srtFile && !isTranscribing && (
-                          <div className="flex justify-between items-center bg-surface-2 p-1 rounded-lg border border-border text-xs mt-2">
-                            <span className="truncate text-text-1 font-medium max-w-[80px]" title={srtFile.name}>
-                              📄 {srtFile.name}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSrtFile(null);
-                                setSubtitlesList([]);
-                              }}
-                              className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface cursor-pointer animate-fade-in"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
-                          </div>
-                        )}
-                      </div>
 
-                      <div className="bg-surface border border-border p-3 rounded-xl flex flex-col justify-between">
-                        <div>
-                          <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-2">🖼️ Watermark (PNG)</span>
-                          <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2.5 px-2 rounded-lg cursor-pointer transition-all text-center">
-                            <input
-                              type="file"
-                              accept="image/png,image/*"
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) setWatermarkFile(file);
-                              }}
-                              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                            />
-                            <ImageIcon className="w-4 h-4 text-accent mb-0.5" />
-                            <span className="text-xs text-text-1 font-semibold">Choose PNG Logo</span>
-                          </label>
-                        </div>
-                        {watermarkFile && (
-                          <div className="space-y-1.5 mt-2">
-                            <div className="flex justify-between items-center bg-surface-2 p-1 rounded-lg border border-border text-xs">
-                              <span className="truncate text-text-1 font-medium max-w-[80px]" title={watermarkFile.name}>
-                                🖼️ {watermarkFile.name}
-                              </span>
-                              <button
-                                onClick={() => setWatermarkFile(null)}
-                                className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface cursor-pointer"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                              </button>
+                          {/* Viral Hooks Card */}
+                          <div className="bg-surface-2 border border-border p-3 rounded-xl hover:bg-border/5 flex flex-col gap-2" title={tooltip("Prepend a short, high-energy hook clip at the beginning of each split part.")}>
+                            <div className="flex justify-between items-start">
+                              <div className="flex gap-2">
+                                <span className="text-sm mt-0.5">🪝</span>
+                                <div>
+                                  <label className="text-xs font-bold text-text-1 block mb-0.5">Viral Hooks Randomizer</label>
+                                  <p className="text-[10px] text-text-2 leading-tight max-w-[200px]">Prepend a random short (1-3s) clip before each part</p>
+                                </div>
+                              </div>
+                              <label className="relative inline-flex items-center cursor-pointer mt-1 shrink-0" title={tooltip(isHookEnabled ? "Click to turn OFF hooks randomizer" : "Click to turn ON hooks randomizer")}>
+                                <input 
+                                  type="checkbox" 
+                                  className="sr-only peer" 
+                                  checked={isHookEnabled}
+                                  onChange={(e) => setIsHookEnabled(e.target.checked)}
+                                />
+                                <div className="w-8 h-4.5 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-accent"></div>
+                              </label>
                             </div>
-                            <div>
+                            
+                            {isHookEnabled && (
+                              <div className="mt-1 bg-surface p-2.5 rounded-lg border border-border space-y-2 animate-fade-in">
+                                <div className="flex flex-col gap-1" title={tooltip("Choose one or more short videos (usually 1 to 3 seconds long) to use as attention-grabbing hooks.")}>
+                                  <span className="text-[9px] font-bold text-text-2 uppercase tracking-wider font-sans">Upload Hooks</span>
+                                  <label className="relative flex flex-col items-center justify-center border border-dashed border-border hover:border-accent bg-surface-2 hover:bg-accent-glow py-2.5 px-3 rounded-lg cursor-pointer transition-all text-center group">
+                                    <input
+                                      type="file"
+                                      multiple
+                                      accept="video/*"
+                                      onChange={handleHookFilesChange}
+                                      className="hidden"
+                                    />
+                                    <UploadCloud className="w-4 h-4 text-accent mb-0.5 group-hover:scale-115 transition-transform" />
+                                    <span className="text-[10px] text-text-1 font-bold">Choose video files</span>
+                                  </label>
+                                </div>
+                                
+                                {hookFiles.length > 0 && (
+                                  <div className="space-y-1 max-h-24 overflow-y-auto pr-1">
+                                    {hookFiles.map((file, idx) => (
+                                      <div key={idx} className="flex justify-between items-center bg-surface-2 p-1 rounded-lg border border-border text-xs">
+                                        <span className="truncate text-text-1 font-medium max-w-[140px]" title={file.name}>
+                                          📄 {file.name}
+                                        </span>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-text-2 text-[10px] bg-surface px-1.5 py-0.5 rounded font-bold border border-border">
+                                            {hookDurations[file.name] ? `${hookDurations[file.name].toFixed(1)}s` : "..."}
+                                          </span>
+                                          <button
+                                            onClick={() => handleRemoveHook(idx)}
+                                            className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface cursor-pointer"
+                                          >
+                                            <Trash2 className="w-3 h-3" />
+                                          </button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Bypass Copyright Card */}
+                          <div className="bg-surface-2 border border-border p-3 rounded-xl hover:bg-border/5 flex justify-between items-center" title={tooltip("Slightly shift pitch, speed, scale, and colors to help avoid duplication detection filters on social platforms.")}>
+                            <div className="flex gap-2">
+                              <span className="text-sm mt-0.5">🛡️</span>
+                              <div>
+                                <div className="flex items-center gap-1.5 mb-0.5">
+                                  <label className="text-xs font-bold text-text-1 block">Bypass Duplication Filters</label>
+                                  <span className="bg-yellow-500/10 text-yellow-500 text-[8px] font-bold px-1.5 py-0.5 rounded border border-yellow-500/20">Slow</span>
+                                </div>
+                                <p className="text-[10px] text-text-2 leading-tight max-w-[200px]">
+                                  Shift speed, pitch, colors, and scale slightly to bypass copyright detectors
+                                </p>
+                              </div>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer shrink-0" title={tooltip(bypassCopyright ? "Click to turn OFF copyright bypass filters" : "Click to turn ON copyright bypass filters")}>
+                              <input 
+                                type="checkbox" 
+                                className="sr-only peer" 
+                                checked={bypassCopyright}
+                                onChange={(e) => setBypassCopyright(e.target.checked)}
+                              />
+                              <div className="w-8 h-4.5 bg-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-text-1 after:border-border after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-accent"></div>
+                            </label>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* SECTION 4: OVERLAYS & AUDIO */}
+                {(() => {
+                  const activeOverlaysCount = [
+                    topText.trim() !== "",
+                    bottomText.trim() !== "",
+                    bgAudioFile !== null,
+                    watermarkFile !== null,
+                  ].filter(Boolean).length;
+
+                  return (
+                    <div className="border border-border rounded-xl bg-surface overflow-hidden shadow-sm">
+                      <button
+                        type="button"
+                        onClick={() => setSectionsState(prev => ({ ...prev, overlays: !prev.overlays }))}
+                        className={`w-full py-3 px-4 flex items-center justify-between text-left cursor-pointer transition-colors ${
+                          sectionsState.overlays ? "bg-surface-2 border-b border-border" : "hover:bg-surface-2"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">🎨</span>
+                          <span className="text-xs font-bold text-text-1 uppercase tracking-wider">4. Overlays & Audio</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {activeOverlaysCount > 0 && (
+                            <span className="bg-[#6C63FF]/15 text-[#8b85ff] text-[9px] font-black px-2 py-0.5 rounded-full border border-[#6C63FF]/20">
+                              {activeOverlaysCount} active
+                            </span>
+                          )}
+                          <span className="text-text-2">
+                            {sectionsState.overlays ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                          </span>
+                        </div>
+                      </button>
+
+                      {sectionsState.overlays && (
+                        <div className="p-4 space-y-3.5 animate-fade-in">
+                          {/* Text Overlays Card */}
+                          <div className="bg-surface-2 border border-border p-3.5 rounded-xl space-y-2.5" title={tooltip("Add custom text at the top or bottom of the video. Tip: Type {n} to automatically insert the clip number (e.g. Part 1, Part 2).")}>
+                            <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-1 flex items-center gap-1">
+                              📝 Title Overlays
+                            </span>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-[10px] font-bold text-text-2 uppercase block mb-1">Top Text</label>
+                                <input 
+                                  type="text" 
+                                  value={topText}
+                                  onChange={(e) => setTopText(e.target.value)}
+                                  className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg focus:border-accent focus:ring-1 focus:ring-accent outline-none text-text-1 placeholder-text-2/30 text-xs transition-all font-bold"
+                                  placeholder="e.g. Part {n}"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-bold text-text-2 uppercase block mb-1">Bottom Text</label>
+                                <input 
+                                  type="text" 
+                                  value={bottomText}
+                                  onChange={(e) => setBottomText(e.target.value)}
+                                  className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg focus:border-accent focus:ring-1 focus:ring-accent outline-none text-text-1 placeholder-text-2/30 text-xs transition-all font-bold"
+                                  placeholder="e.g. Follow!"
+                                />
+                              </div>
+                            </div>
+                            <div className="bg-surface border border-border p-2 rounded-lg flex items-start gap-1.5 text-[11px] text-text-2 leading-relaxed">
+                              <Info className="w-3.5 h-3.5 text-accent shrink-0 mt-0.5" />
+                              <p>Use <code className="text-accent font-mono font-bold">{`{n}`}</code> to insert the dynamic part number automatically.</p>
+                            </div>
+                          </div>
+
+                          {/* Watermark Card */}
+                          <div className="bg-surface-2 border border-border p-3.5 rounded-xl flex flex-col gap-2" title={tooltip("Upload a small PNG logo image to overlay on top of your video (like a corner watermark) to brand your clips.")}>
+                            <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-0.5 flex items-center gap-1">
+                              🖼️ Brand Logo Watermark
+                            </span>
+                            {!watermarkFile ? (
+                              <label className="relative flex flex-col items-center justify-center border-2 border-dashed border-border hover:border-accent bg-surface hover:bg-accent-glow/5 py-2.5 px-3 rounded-lg cursor-pointer transition-all text-center group h-[54px]">
+                                <input
+                                  type="file"
+                                  accept="image/png,image/*"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) setWatermarkFile(file);
+                                  }}
+                                  className="hidden"
+                                />
+                                <ImageIcon className="w-4 h-4 text-accent mb-0.5 group-hover:scale-115 transition-transform" />
+                                <span className="text-[10px] text-text-1 font-semibold">Upload PNG Logo</span>
+                              </label>
+                            ) : (
+                              <div className="flex flex-col gap-2 bg-surface p-2.5 rounded-lg border border-border">
+                                <div className="flex justify-between items-center text-xs">
+                                  <span className="truncate text-text-1 font-semibold max-w-[200px]" title={watermarkFile.name}>
+                                    🖼️ {watermarkFile.name}
+                                  </span>
+                                  <button
+                                    onClick={() => setWatermarkFile(null)}
+                                    className="text-red hover:text-red/80 font-bold p-0.5 rounded cursor-pointer"
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                                <div className="flex items-center gap-2 pt-2 border-t border-border/40 justify-between">
+                                  <span className="text-[10px] text-text-2 font-bold uppercase tracking-wider">Position</span>
+                                  <select
+                                    value={watermarkPosition}
+                                    onChange={(e) => {
+                                      const pos = e.target.value as "topLeft" | "topRight" | "bottomLeft" | "bottomRight";
+                                      setWatermarkPosition(pos);
+                                      if (pos === "topLeft") {
+                                        setWatermarkX(15);
+                                        setWatermarkY(10);
+                                      } else if (pos === "topRight") {
+                                        setWatermarkX(85);
+                                        setWatermarkY(10);
+                                      } else if (pos === "bottomLeft") {
+                                        setWatermarkX(15);
+                                        setWatermarkY(85);
+                                      } else if (pos === "bottomRight") {
+                                        setWatermarkX(85);
+                                        setWatermarkY(85);
+                                      }
+                                    }}
+                                    className="px-1.5 py-0.5 bg-surface-2 border border-border rounded text-[10px] text-text-1 outline-none font-bold"
+                                  >
+                                    <option value="topRight">Top R</option>
+                                    <option value="topLeft">Top L</option>
+                                    <option value="bottomRight">Bottom R</option>
+                                    <option value="bottomLeft">Bottom L</option>
+                                  </select>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Auto-BGM Card */}
+                          <div className="bg-surface-2 border border-border p-3.5 rounded-xl flex flex-col gap-2" title={tooltip("Choose an audio track to play quietly in the background of your video, and adjust its volume mix.")}>
+                            <span className="text-xs uppercase tracking-wider text-text-2 font-bold block mb-0.5 flex items-center gap-1">
+                              🎵 Background Music (Auto-BGM)
+                            </span>
+
+                            <div className="space-y-1">
+                              <span className="text-[9px] text-text-2 font-bold uppercase tracking-wider block mb-1">Audio Export Option</span>
                               <select
-                                value={watermarkPosition}
-                                onChange={(e) => setWatermarkPosition(e.target.value as "topLeft" | "topRight" | "bottomLeft" | "bottomRight")}
-                                className="w-full px-1.5 py-0.5 bg-surface-2 border border-border rounded text-xs text-text-1 outline-none focus:border-accent font-bold"
+                                value={bgAudioMode}
+                                onChange={(e) => setBgAudioMode(e.target.value as "mix" | "bgm_only")}
+                                className="w-full px-2 py-1 bg-surface border border-border rounded text-[10px] text-text-1 outline-none font-bold cursor-pointer"
                               >
-                                <option value="topRight">Top R</option>
-                                <option value="topLeft">Top L</option>
-                                <option value="bottomRight">Bottom R</option>
-                                <option value="bottomLeft">Bottom L</option>
+                                <option value="mix">Mix Original Audio + BGM</option>
+                                <option value="bgm_only">BGM Only (Mute Original Video)</option>
                               </select>
                             </div>
+
+                            {!bgAudioFile ? (
+                              <label className="relative flex flex-col items-center justify-center border-2 border-dashed border-border hover:border-accent bg-surface hover:bg-accent-glow/5 py-3 px-3 rounded-lg cursor-pointer transition-all text-center group">
+                                <input
+                                  type="file"
+                                  accept="audio/*"
+                                  onChange={(e) => {
+                                    const file = e.target.files?.[0];
+                                    if (file) setBgAudioFile(file);
+                                  }}
+                                  className="hidden"
+                                />
+                                <Music className="w-4 h-4 text-accent mb-0.5 group-hover:scale-115 transition-transform" />
+                                <span className="text-[11px] text-text-1 font-semibold">Choose audio file</span>
+                              </label>
+                            ) : (
+                              <div className="space-y-2.5 bg-surface p-2.5 rounded-lg border border-border text-xs">
+                                <div className="flex justify-between items-center bg-surface-2 p-1.5 rounded-lg border border-border">
+                                  <span className="truncate text-text-1 font-medium max-w-[170px]" title={bgAudioFile.name}>
+                                    🎵 {bgAudioFile.name}
+                                  </span>
+                                  <button
+                                    onClick={() => setBgAudioFile(null)}
+                                    className="text-red hover:text-red/80 p-0.5 rounded hover:bg-surface cursor-pointer"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                                <div className="space-y-1">
+                                  <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-text-2">
+                                    <span>Volume</span>
+                                    <span className="text-accent">{Math.round(bgmVolume * 100)}%</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <Volume2 className="w-3 h-3 text-text-2" />
+                                    <input 
+                                      type="range" 
+                                      min={0} 
+                                      max={1} 
+                                      step={0.01}
+                                      value={bgmVolume} 
+                                      onChange={(e) => setBgmVolume(Number(e.target.value))}
+                                      className="flex-1 accent-accent h-1.5 bg-border rounded-lg appearance-none cursor-pointer"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
+
               </div>
             </div>
 

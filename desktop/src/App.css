@@ -1,12 +1,37 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Outfit:wght@100..900&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&display=swap');
 @import "tailwindcss";
 
 @custom-variant dark (&:is(.dark *));
 
 :root {
   --radius: 8px;
+  --bg: #faf9fb;
+  --surface: rgba(255, 255, 255, 0.65);
+  --accent: linear-gradient(135deg, #06b6d4, #8b5cf6);
+  --text-main: 'Inter', sans-serif;
+  --text-numbers: 'Outfit', sans-serif;
 
-  /* ─── Professional Dark Theme ─── */
+  /* ─── Premium Light Theme ─── */
+  --color-bg-val: #faf9fb;
+  --color-surface-val: #ffffff;
+  --color-surface-2-val: #f3f1f6;
+  --color-surface-3-val: #e4e2eb;
+  --color-border-val: #dad9e2;
+  --color-accent-val: #8b5cf6;
+  --color-accent-hover-val: #7c3aed;
+  --color-accent-glow-val: rgba(139, 92, 246, 0.06);
+  --color-text-1-val: #1c1b22;
+  --color-text-2-val: #5c5b66;
+}
+
+.dark {
+  --bg: #090e1a;
+  --surface: rgba(15, 23, 42, 0.45);
+  --accent: linear-gradient(135deg, #06b6d4, #8b5cf6);
+  --text-main: 'Inter', sans-serif;
+  --text-numbers: 'Outfit', sans-serif;
+
+  /* ─── Premium Dark Theme ─── */
   --color-bg-val: #111118;
   --color-surface-val: #18181f;
   --color-surface-2-val: #1e1e28;
@@ -166,11 +191,17 @@
    Glass Panel (toned down)
    ═══════════════════════════════════════ */
 .glass-panel {
-  background: rgba(24, 24, 31, 0.85);
+  background: rgba(255, 255, 255, 0.80);
   backdrop-filter: blur(12px) saturate(1.1);
   -webkit-backdrop-filter: blur(12px) saturate(1.1);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.dark .glass-panel {
+  background: rgba(24, 24, 31, 0.85);
   border: 1px solid rgba(255, 255, 255, 0.05);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 /* ═══════════════════════════════════════
@@ -260,11 +291,99 @@
   animation: shimmer 1.8s ease-in-out infinite;
 }
 
-/* ═══════════════════════════════════════
-   Preview workspace matte
-   ═══════════════════════════════════════ */
 .preview-workspace {
+  background: #f0f0f5;
+  background-image:
+    radial-gradient(circle at 50% 50%, rgba(139, 92, 246, 0.01) 0%, transparent 70%);
+}
+
+.dark .preview-workspace {
   background: #0a0a0f;
   background-image:
     radial-gradient(circle at 50% 50%, rgba(139, 92, 246, 0.02) 0%, transparent 70%);
 }
+
+/* ═══════════════════════════════════════
+   4-Zone Workspace Layout
+   ═══════════════════════════════════════ */
+.workspace-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr 360px;
+  grid-template-rows: 1fr 220px;
+  grid-template-areas:
+    "left-sidebar center-canvas right-inspector"
+    "bottom-timeline bottom-timeline bottom-timeline";
+  height: calc(100vh - 40px); /* 40px for header */
+  overflow: hidden;
+  background-color: var(--bg);
+}
+
+.left-sidebar-zone {
+  grid-area: left-sidebar;
+  border-right: 1px solid var(--color-border);
+  background: var(--surface);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.center-canvas-zone {
+  grid-area: center-canvas;
+  background: var(--color-bg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.right-inspector-zone {
+  grid-area: right-inspector;
+  border-left: 1px solid var(--color-border);
+  background: var(--surface);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.bottom-timeline-zone {
+  grid-area: bottom-timeline;
+  border-top: 1px solid var(--color-border);
+  background: var(--surface);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Scrollbars & Font styling mapping */
+.font-main {
+  font-family: var(--text-main);
+}
+
+.font-numbers {
+  font-family: var(--text-numbers);
+}
+
+.glassmorphic-card {
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.glassmorphic-card:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.tab-active {
+  background: var(--accent);
+  color: white;
+}
+
