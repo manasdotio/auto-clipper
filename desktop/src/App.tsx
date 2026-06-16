@@ -95,6 +95,7 @@ export default function App() {
   const timelineContainerRef = useRef<HTMLDivElement>(null);
   const logsRef = useRef<string[]>([]);
   const isScrubbingRef = useRef(false);
+  const isLoadedRef = useRef(false);
   const [bgAudioSrc, setBgAudioSrc] = useState<string>("");
   
   
@@ -131,6 +132,10 @@ export default function App() {
   const [watermarkPosition, setWatermarkPosition] = useState<"topLeft" | "topRight" | "bottomLeft" | "bottomRight">("topRight");
   const [topText, setTopText] = useState<string>("");
   const [bottomText, setBottomText] = useState<string>("");
+  const [topTextSize, setTopTextSize] = useState<number>(60);
+  const [bottomTextSize, setBottomTextSize] = useState<number>(60);
+  const [topTextColor, setTopTextColor] = useState<string>("#FFFFFF");
+  const [bottomTextColor, setBottomTextColor] = useState<string>("#FFFFFF");
   const [showSafeZone, setShowSafeZone] = useState<boolean>(false);
   const [safeZoneRatio, setSafeZoneRatio] = useState<"9:16" | "4:5">("9:16");
 
@@ -318,6 +323,234 @@ export default function App() {
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [duration, isPlaying, togglePlayback]);
+
+  const loadConfigObject = (config: any) => {
+    if (config.videoPath !== undefined) {
+      setVideoPath(config.videoPath);
+      if (config.videoPath) {
+        invoke<string>("get_video_url", { path: config.videoPath })
+          .then(url => setVideoSrc(url))
+          .catch(err => console.warn(err));
+        invoke<number>("get_video_duration", { path: config.videoPath })
+          .then(dur => setDuration(dur))
+          .catch(err => console.warn(err));
+        invoke<[number, number]>("get_video_dimensions", { path: config.videoPath })
+          .then(dims => setVideoDimensions({ width: dims[0], height: dims[1] }))
+          .catch(err => console.warn(err));
+      } else {
+        setVideoSrc("");
+        setDuration(0);
+        setVideoDimensions({ width: 0, height: 0 });
+      }
+    }
+    if (config.bulkVideoPaths !== undefined) setBulkVideoPaths(config.bulkVideoPaths);
+    if (config.segmentLengthMinutes !== undefined) setSegmentLengthMinutes(config.segmentLengthMinutes);
+    if (config.prefix !== undefined) setPrefix(config.prefix);
+    if (config.outputDirectory !== undefined) setOutputDirectory(config.outputDirectory);
+    if (config.aspectRatio !== undefined) {
+      setAspectRatio(config.aspectRatio);
+      setIsReelFormat(config.aspectRatio !== "original");
+    }
+    if (config.framingMode !== undefined) setFramingMode(config.framingMode);
+    if (config.exportResolution !== undefined) setExportResolution(config.exportResolution);
+    if (config.topText !== undefined) setTopText(config.topText);
+    if (config.bottomText !== undefined) setBottomText(config.bottomText);
+    if (config.topTextSize !== undefined) setTopTextSize(config.topTextSize);
+    if (config.bottomTextSize !== undefined) setBottomTextSize(config.bottomTextSize);
+    if (config.topTextColor !== undefined) setTopTextColor(config.topTextColor);
+    if (config.bottomTextColor !== undefined) setBottomTextColor(config.bottomTextColor);
+    if (config.topTextY !== undefined) setTopTextY(config.topTextY);
+    if (config.bottomTextY !== undefined) setBottomTextY(config.bottomTextY);
+    if (config.isGenZSplit !== undefined) setIsGenZSplit(config.isGenZSplit);
+    if (config.bgVideoPath !== undefined) {
+      setBgVideoPath(config.bgVideoPath);
+      if (config.bgVideoPath) {
+        invoke<string>("get_video_url", { path: config.bgVideoPath })
+          .then(url => setBgVideoSrc(url))
+          .catch(err => console.warn(err));
+        invoke<[number, number]>("get_video_dimensions", { path: config.bgVideoPath })
+          .then(dims => setBgVideoDimensions({ width: dims[0], height: dims[1] }))
+          .catch(err => console.warn(err));
+      } else {
+        setBgVideoSrc("");
+        setBgVideoDimensions({ width: 0, height: 0 });
+      }
+    }
+    if (config.isHookEnabled !== undefined) setIsHookEnabled(config.isHookEnabled);
+    if (config.hookPaths !== undefined) setHookPaths(config.hookPaths);
+    if (config.isBgAudioEnabled !== undefined) setIsBgAudioEnabled(config.isBgAudioEnabled);
+    if (config.bgAudioPath !== undefined) {
+      setBgAudioPath(config.bgAudioPath);
+      if (config.bgAudioPath) {
+        invoke<string>("get_video_url", { path: config.bgAudioPath })
+          .then(url => setBgAudioSrc(url))
+          .catch(err => console.warn(err));
+      } else {
+        setBgAudioSrc("");
+      }
+    }
+    if (config.bgmVolume !== undefined) setBgmVolume(config.bgmVolume);
+    if (config.bgAudioMode !== undefined) setBgAudioMode(config.bgAudioMode);
+    if (config.bypassCopyright !== undefined) setBypassCopyright(config.bypassCopyright);
+    if (config.metadataScrubbing !== undefined) setMetadataScrubbing(config.metadataScrubbing);
+    if (config.audioShift !== undefined) setAudioShift(config.audioShift);
+    if (config.antiCopyrightSpeed !== undefined) setAntiCopyrightSpeed(config.antiCopyrightSpeed);
+    if (config.useSceneCut !== undefined) setUseSceneCut(config.useSceneCut);
+    if (config.startOffset !== undefined) setStartOffset(config.startOffset);
+    if (config.endOffset !== undefined) setEndOffset(config.endOffset);
+    if (config.watermarkPath !== undefined) {
+      setWatermarkPath(config.watermarkPath);
+      if (config.watermarkPath) {
+        invoke<string>("get_video_url", { path: config.watermarkPath })
+          .then(url => setWatermarkSrc(url))
+          .catch(err => console.warn(err));
+      } else {
+        setWatermarkSrc("");
+      }
+    }
+    if (config.watermarkX !== undefined) setWatermarkX(config.watermarkX);
+    if (config.watermarkY !== undefined) setWatermarkY(config.watermarkY);
+  };
+
+  const getSettingsJson = () => {
+    return JSON.stringify({
+      videoPath,
+      bulkVideoPaths,
+      segmentLengthMinutes,
+      prefix,
+      outputDirectory,
+      aspectRatio,
+      framingMode,
+      exportResolution,
+      topText,
+      bottomText,
+      topTextSize,
+      bottomTextSize,
+      topTextColor,
+      bottomTextColor,
+      topTextY,
+      bottomTextY,
+      isGenZSplit,
+      bgVideoPath,
+      isHookEnabled,
+      hookPaths,
+      isBgAudioEnabled,
+      bgAudioPath,
+      bgmVolume,
+      bgAudioMode,
+      bypassCopyright,
+      metadataScrubbing,
+      audioShift,
+      antiCopyrightSpeed,
+      useSceneCut,
+      startOffset,
+      endOffset,
+      watermarkPath,
+      watermarkX,
+      watermarkY
+    }, null, 2);
+  };
+
+  // Load configuration from startup file on disk
+  useEffect(() => {
+    async function loadFromFile() {
+      try {
+        const saved = await invoke<string>("load_autosave_config");
+        if (saved) {
+          const config = JSON.parse(saved);
+          loadConfigObject(config);
+        }
+      } catch (e) {
+        console.log("No previous disk configuration loaded:", e);
+        // Fallback to localStorage just in case
+        try {
+          const saved = localStorage.getItem("clipper_settings");
+          if (saved) {
+            const config = JSON.parse(saved);
+            loadConfigObject(config);
+          }
+        } catch (localErr) {
+          console.warn(localErr);
+        }
+      } finally {
+        isLoadedRef.current = true;
+      }
+    }
+    loadFromFile();
+  }, []);
+
+  // Autosave settings to desktop file on state changes
+  useEffect(() => {
+    if (!isLoadedRef.current) return;
+
+    const json = getSettingsJson();
+    // Save to disk config file
+    invoke("save_autosave_config", { data: json }).catch(err => {
+      console.warn("Failed to write config to disk:", err);
+    });
+    // Keep localStorage in sync as backup
+    localStorage.setItem("clipper_settings", json);
+  }, [
+    videoPath,
+    bulkVideoPaths,
+    segmentLengthMinutes,
+    prefix,
+    outputDirectory,
+    aspectRatio,
+    framingMode,
+    exportResolution,
+    topText,
+    bottomText,
+    topTextSize,
+    bottomTextSize,
+    topTextColor,
+    bottomTextColor,
+    topTextY,
+    bottomTextY,
+    isGenZSplit,
+    bgVideoPath,
+    isHookEnabled,
+    hookPaths,
+    isBgAudioEnabled,
+    bgAudioPath,
+    bgmVolume,
+    bgAudioMode,
+    bypassCopyright,
+    metadataScrubbing,
+    audioShift,
+    antiCopyrightSpeed,
+    useSceneCut,
+    startOffset,
+    endOffset,
+    watermarkPath,
+    watermarkX,
+    watermarkY
+  ]);
+
+  const handleExportConfig = async () => {
+    try {
+      const json = getSettingsJson();
+      const success = await invoke<boolean | null>("save_config_file", { data: json });
+      if (success) {
+        alert("Preset configuration exported successfully!");
+      }
+    } catch (err) {
+      alert("Failed to export configuration: " + err);
+    }
+  };
+
+  const handleImportConfig = async () => {
+    try {
+      const jsonStr = await invoke<string | null>("select_config_file");
+      if (jsonStr) {
+        const config = JSON.parse(jsonStr);
+        loadConfigObject(config);
+        alert("Preset configuration loaded successfully!");
+      }
+    } catch (err) {
+      alert("Failed to load preset configuration: " + err);
+    }
+  };
 
   // Native File Picker functions
   const selectMainVideo = async () => {
@@ -690,34 +923,47 @@ export default function App() {
           alert(`Video "${currentVideoBase}" is too short for the specified intro/outro trim options!`);
           continue;
         }
-        const numNominalSegments = Math.ceil(effectiveDuration / segmentLength);
+        let currentPosition = startOffset;
+        const endLimit = currentDur - endOffset;
         
-        for (let i = 1; i < numNominalSegments; i++) {
-          const nominalStart = startOffset + i * segmentLength;
+        while (currentPosition + segmentLength < endLimit) {
+          const maxNextSplit = currentPosition + segmentLength;
           if (useSceneCut) {
-            setStatusDetail(`[Video ${fileIdx + 1}/${pathsToProcess.length}] Analyzing transitions around clip ${i} boundary...`);
-            const seekStart = Math.max(0, nominalStart - 5);
-            let detectedOffset = -1;
+            setStatusDetail(`[Video ${fileIdx + 1}/${pathsToProcess.length}] Analyzing speech and scenes for clip boundary...`);
+            // Scan 10 seconds before the maximum clip length limit (at least 1.0s ahead of current position)
+            const scanDuration = 10;
+            const scanStart = Math.max(currentPosition + 1.0, maxNextSplit - scanDuration);
+            const scanLen = maxNextSplit - scanStart;
+            
+            let detectedSilenceStarts: number[] = [];
+            let detectedSilenceEnds: number[] = [];
+            let detectedSceneCuts: number[] = [];
             
             const logListener = await listen<string>("ffmpeg-log", (event) => {
               const message = event.payload;
+              if (message.includes("silence_start:")) {
+                const match = message.match(/silence_start:\s*([0-9.]+)/);
+                if (match) detectedSilenceStarts.push(Number(match[1]));
+              }
+              if (message.includes("silence_end:")) {
+                const match = message.match(/silence_end:\s*([0-9.]+)/);
+                if (match) detectedSilenceEnds.push(Number(match[1]));
+              }
               if (message.includes("showinfo") && message.includes("pts_time:")) {
-                const match = message.match(/pts_time:([0-9.]+)/);
-                if (match && detectedOffset === -1) {
-                  detectedOffset = Number(match[1]);
-                }
+                const match = message.match(/pts_time:\s*([0-9.]+)/);
+                if (match) detectedSceneCuts.push(Number(match[1]));
               }
             });
             
             try {
+              // Run combined visual scene and audio silence scan
               await invoke("run_ffmpeg_command", {
                 args: [
-                  "-ss", seekStart.toString(),
-                  "-t", "10",
+                  "-ss", scanStart.toString(),
+                  "-t", scanLen.toString(),
                   "-i", currentVideoPath,
-                  "-an",
-                  "-sn",
                   "-vf", "scale=160:-2,select='gt(scene,0.3)',showinfo",
+                  "-af", "silencedetect=noise=-30dB:d=0.4",
                   "-f", "null",
                   "null"
                 ]
@@ -728,14 +974,42 @@ export default function App() {
               logListener();
             }
             
-            if (detectedOffset !== -1) {
-              const sceneTime = seekStart + detectedOffset;
-              segmentStarts.push(sceneTime);
+            let chosenOffset = -1;
+            
+            // Build silence intervals
+            interface SilenceInterval {
+              start: number;
+              end: number;
+              mid: number;
+            }
+            const silences: SilenceInterval[] = [];
+            for (let k = 0; k < detectedSilenceStarts.length; k++) {
+              const start = detectedSilenceStarts[k];
+              const end = (k < detectedSilenceEnds.length) ? detectedSilenceEnds[k] : scanLen;
+              silences.push({ start, end, mid: (start + end) / 2 });
+            }
+            
+            if (silences.length > 0) {
+              // Pick the latest silence to keep the clip close to the target limit but strictly below it
+              silences.sort((a, b) => b.mid - a.mid);
+              chosenOffset = silences[0].mid;
+            } else if (detectedSceneCuts.length > 0) {
+              // Fallback to the latest visual camera change
+              detectedSceneCuts.sort((a, b) => b - a);
+              chosenOffset = detectedSceneCuts[0];
+            }
+            
+            if (chosenOffset !== -1 && chosenOffset > 0 && chosenOffset < scanLen) {
+              const nextSplit = scanStart + chosenOffset;
+              segmentStarts.push(nextSplit);
+              currentPosition = nextSplit;
             } else {
-              segmentStarts.push(nominalStart);
+              segmentStarts.push(maxNextSplit);
+              currentPosition = maxNextSplit;
             }
           } else {
-            segmentStarts.push(nominalStart);
+            segmentStarts.push(maxNextSplit);
+            currentPosition = maxNextSplit;
           }
         }
         
@@ -849,7 +1123,7 @@ export default function App() {
           // Copyright Bypass settings
           const satShift = 1.03;
           const hueShift = 2.0;
-          const speed = 1.03;
+          const speed = antiCopyrightSpeed;
 
           // Compile Hook scaling if present
           if (selectedHookPath) {
@@ -859,7 +1133,7 @@ export default function App() {
             }
             filterParts.push(`[${hookIdx}:v]scale=${targetW}:${hookScaleH}:force_original_aspect_ratio=increase,crop=${targetW}:${hookScaleH}[hook_v]`);
             if (hookHasAudio) {
-              filterParts.push(`[${hookIdx}:a]anull[hook_a]`);
+              filterParts.push(`[${hookIdx}:a]aresample=44100,aformat=channel_layouts=stereo[hook_a]`);
             } else {
               filterParts.push(`anullsrc=r=44100:cl=stereo:d=${hookDuration}[hook_a]`);
             }
@@ -873,23 +1147,21 @@ export default function App() {
             } else if (framingMode === "crop") {
               primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${primaryScaleH}`;
             } else if (framingMode === "letterbox") {
-              const zoom = bypassCopyright ? "crop=0.98*iw:0.98*ih," : "";
-              primVF = `[${primaryIdx}:v]${zoom}scale=${targetW}:-2,pad=${targetW}:${primaryScaleH}:0:(oh-ih)/2:black`;
+              primVF = `[${primaryIdx}:v]scale=${targetW}:-2,pad=${targetW}:${primaryScaleH}:0:(oh-ih)/2:black`;
             } else {
-              const zoom = bypassCopyright ? "crop=0.98*iw:0.98*ih," : "";
-              filterParts.push(`[${primaryIdx}:v]${zoom}split=2[v_bg][v_fg]`);
+              filterParts.push(`[${primaryIdx}:v]split=2[v_bg][v_fg]`);
               filterParts.push(`[v_bg]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${primaryScaleH},boxblur=20:2[bg_blur]`);
               filterParts.push(`[v_fg]scale=${targetW}:-2[fg_scaled]`);
               primVF = `[bg_blur][fg_scaled]overlay=0:(H-h)/2`;
             }
             if (bypassCopyright) {
-              primVF += `,hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
+              primVF += `,crop=0.98*iw:0.98*ih,scale=${targetW}:${primaryScaleH},hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
             }
             filterParts.push(`${primVF}[primary_v]`);
           } else {
             let primVF = `[${primaryIdx}:v]`;
             if (bypassCopyright) {
-              primVF += `crop=0.98*iw:0.98*ih,hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
+              primVF += `crop=0.98*iw:0.98*ih,scale=${targetW}:${targetH},hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
             } else {
               primVF += `null`;
             }
@@ -902,9 +1174,9 @@ export default function App() {
             if (bypassCopyright) {
               const pitchFactor = 1.01;
               const tempoCombined = (speed / pitchFactor).toFixed(4);
-              primAF += `asetrate=44100*${pitchFactor},atempo=${tempoCombined},aresample=44100`;
+              primAF += `asetrate=${Math.round(44100 * pitchFactor)},atempo=${tempoCombined},aresample=44100,aformat=channel_layouts=stereo`;
             } else {
-              primAF += `anull`;
+              primAF += `aresample=44100,aformat=channel_layouts=stereo`;
             }
             filterParts.push(`${primAF}[primary_a]`);
           } else {
@@ -925,15 +1197,15 @@ export default function App() {
 
           // BGM overlays
           if (isBgAudioEnabled && bgAudioPath && bgAudioIdx !== -1) {
-            filterParts.push(`[${bgAudioIdx}:a]volume=${bgmVolume}[bgm_a]`);
+            filterParts.push(`[${bgAudioIdx}:a]aresample=44100,aformat=channel_layouts=stereo,volume=${bgmVolume}[bgm_a]`);
             if (bgAudioMode === 'bgm_only') {
               filterParts.push(`[primary_a]volume=0[silent_primary_a]`);
-              filterParts.push(`[silent_primary_a][bgm_a]amix=inputs=2:duration=first[main_a]`);
+              filterParts.push(`[silent_primary_a][bgm_a]amix=inputs=2:duration=first,aformat=channel_layouts=stereo[main_a]`);
             } else {
-              filterParts.push(`[primary_a][bgm_a]amix=inputs=2:duration=first[main_a]`);
+              filterParts.push(`[primary_a][bgm_a]amix=inputs=2:duration=first,aformat=channel_layouts=stereo[main_a]`);
             }
           } else {
-            filterParts.push(`[primary_a]anull[main_a]`);
+            filterParts.push(`[primary_a]anull,aformat=channel_layouts=stereo[main_a]`);
           }
 
           // Hook concats
@@ -989,13 +1261,13 @@ export default function App() {
             if (topText) {
               const escaped = escapeText(topText, i + 1);
               const separator = (isFirst && textVF.startsWith("[")) ? "" : ",";
-              textVF += `${separator}drawtext=fontfile='${fontPath}':text='${escaped}':fontcolor=white:fontsize=h/18:x=(w-text_w)/2:y=h*${topTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
+              textVF += `${separator}drawtext=fontfile='${fontPath}':text='${escaped}':fontcolor=${formatFfmpegColor(topTextColor)}:fontsize=h*(${topTextSize}/1080):x=(w-text_w)/2:y=h*${topTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
               isFirst = false;
             }
             if (bottomText) {
               const escapedBottom = escapeText(bottomText, i + 1);
               const separator = (isFirst && textVF.startsWith("[")) ? "" : ",";
-              textVF += `${separator}drawtext=fontfile='${fontPath}':text='${escapedBottom}':fontcolor=white:fontsize=h/18:x=(w-text_w)/2:y=h*${bottomTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
+              textVF += `${separator}drawtext=fontfile='${fontPath}':text='${escapedBottom}':fontcolor=${formatFfmpegColor(bottomTextColor)}:fontsize=h*(${bottomTextSize}/1080):x=(w-text_w)/2:y=h*${bottomTextY / 100}-text_h/2:borderw=3:bordercolor=black`;
             }
             filterParts.push(`${textVF}[final_v]`);
             finalVideoLabel = "[final_v]";
@@ -1013,6 +1285,7 @@ export default function App() {
             "-crf", "18",
             "-c:a", "aac",
             "-b:a", "192k",
+            "-ac", "2",
             "-avoid_negative_ts", "1"
           );
 
@@ -1059,6 +1332,13 @@ export default function App() {
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60);
     return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const formatFfmpegColor = (hex: string) => {
+    if (hex.startsWith("#")) {
+      return "0x" + hex.substring(1);
+    }
+    return hex;
   };
 
   // Generate ticks for time ruler
@@ -1598,8 +1878,12 @@ export default function App() {
                     <div 
                       onMouseDown={(e) => startDrag(e, "top")}
                       onClick={(e) => e.stopPropagation()}
-                      style={{ top: `${topTextY}%` }}
-                      className="absolute left-1/2 -translate-x-1/2 z-30 cursor-move text-white text-[10px] font-bold uppercase px-2 py-1 rounded border border-white/10 bg-black/80 shadow-md select-none text-center max-w-[85%] truncate active:border-accent"
+                      style={{ 
+                        top: `${topTextY}%`,
+                        fontSize: `${(topTextSize / 60) * 11}px`,
+                        color: topTextColor
+                      }}
+                      className="absolute left-1/2 -translate-x-1/2 z-30 cursor-move font-bold uppercase px-2 py-1 rounded border border-white/10 bg-black/80 shadow-md select-none text-center max-w-[85%] truncate active:border-accent"
                       title={tooltip("Drag top headline text overlay")}
                     >
                       {topText.replace(/{n}/g, "1")}
@@ -1611,8 +1895,12 @@ export default function App() {
                     <div 
                       onMouseDown={(e) => startDrag(e, "bottom")}
                       onClick={(e) => e.stopPropagation()}
-                      style={{ top: `${bottomTextY}%` }}
-                      className="absolute left-1/2 -translate-x-1/2 z-30 cursor-move text-white text-[10px] font-bold uppercase px-2 py-1 rounded border border-white/10 bg-black/80 shadow-md select-none text-center max-w-[85%] truncate active:border-accent"
+                      style={{ 
+                        top: `${bottomTextY}%`,
+                        fontSize: `${(bottomTextSize / 60) * 11}px`,
+                        color: bottomTextColor
+                      }}
+                      className="absolute left-1/2 -translate-x-1/2 z-30 cursor-move font-bold uppercase px-2 py-1 rounded border border-white/10 bg-black/80 shadow-md select-none text-center max-w-[85%] truncate active:border-accent"
                       title={tooltip("Drag bottom CTA text overlay")}
                     >
                       {bottomText.replace(/{n}/g, "1")}
@@ -1999,6 +2287,48 @@ export default function App() {
                         placeholder="e.g. PART {n} - WAIT FOR END..."
                         className="w-full bg-surface border border-border rounded-lg p-2 text-text-1 focus:border-accent outline-none text-xs font-bold"
                       />
+                      {topText && (
+                        <div className="flex flex-col gap-2 pt-1.5 pl-1.5 border-l border-accent/20 animate-fadeIn">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[8.5px] text-text-2 uppercase font-bold">Size</span>
+                            <div className="flex items-center gap-1.5 flex-1 max-w-[140px]">
+                              <input 
+                                type="range" 
+                                min="20" 
+                                max="120" 
+                                value={topTextSize} 
+                                onChange={(e) => setTopTextSize(parseInt(e.target.value))} 
+                                className="w-full accent-accent cursor-pointer h-1 bg-surface-3 rounded-lg appearance-none"
+                              />
+                              <span className="font-mono text-accent font-numbers text-[8.5px] w-6 text-right">{topTextSize}px</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[8.5px] text-text-2 uppercase font-bold">Color</span>
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1">
+                                {["#FFFFFF", "#FFFF00", "#00FF00", "#00FFFF", "#FF0000", "#FFA500"].map((c) => (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => setTopTextColor(c)}
+                                    style={{ backgroundColor: c }}
+                                    className={`w-3.5 h-3.5 rounded-full border cursor-pointer transition-transform hover:scale-110 active:scale-95 ${
+                                      topTextColor === c ? "border-accent scale-105" : "border-border/60"
+                                    }`}
+                                  />
+                                ))}
+                              </div>
+                              <input 
+                                type="color" 
+                                value={topTextColor} 
+                                onChange={(e) => setTopTextColor(e.target.value)} 
+                                className="w-4 h-4 rounded-md border border-border/50 cursor-pointer overflow-hidden p-0 bg-transparent shrink-0"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                     
                     <div className="space-y-1">
@@ -2019,6 +2349,48 @@ export default function App() {
                         placeholder="e.g. LIKE FOR PART {n}!"
                         className="w-full bg-surface border border-border rounded-lg p-2 text-text-1 focus:border-accent outline-none text-xs font-bold"
                       />
+                      {bottomText && (
+                        <div className="flex flex-col gap-2 pt-1.5 pl-1.5 border-l border-accent/20 animate-fadeIn">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[8.5px] text-text-2 uppercase font-bold">Size</span>
+                            <div className="flex items-center gap-1.5 flex-1 max-w-[140px]">
+                              <input 
+                                type="range" 
+                                min="20" 
+                                max="120" 
+                                value={bottomTextSize} 
+                                onChange={(e) => setBottomTextSize(parseInt(e.target.value))} 
+                                className="w-full accent-accent cursor-pointer h-1 bg-surface-3 rounded-lg appearance-none"
+                              />
+                              <span className="font-mono text-accent font-numbers text-[8.5px] w-6 text-right">{bottomTextSize}px</span>
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[8.5px] text-text-2 uppercase font-bold">Color</span>
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-1">
+                                {["#FFFFFF", "#FFFF00", "#00FF00", "#00FFFF", "#FF0000", "#FFA500"].map((c) => (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => setBottomTextColor(c)}
+                                    style={{ backgroundColor: c }}
+                                    className={`w-3.5 h-3.5 rounded-full border cursor-pointer transition-transform hover:scale-110 active:scale-95 ${
+                                      bottomTextColor === c ? "border-accent scale-105" : "border-border/60"
+                                    }`}
+                                  />
+                                ))}
+                              </div>
+                              <input 
+                                type="color" 
+                                value={bottomTextColor} 
+                                onChange={(e) => setBottomTextColor(e.target.value)} 
+                                className="w-4 h-4 rounded-md border border-border/50 cursor-pointer overflow-hidden p-0 bg-transparent shrink-0"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Height positioning sliders */}
@@ -2359,6 +2731,31 @@ export default function App() {
                       />
                       <span className="absolute right-1.5 inset-y-0 flex items-center text-xs text-text-2 font-mono pointer-events-none font-bold">s</span>
                     </div>
+                  </div>
+                </div>
+
+                {/* Profile Presets & Settings Card */}
+                <div className="bg-surface-2/40 border border-border/85 p-3 rounded-2xl space-y-2.5">
+                  <span className="text-[10px] uppercase font-bold text-text-2 tracking-wider font-main block font-semibold">Profile Presets</span>
+                  
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={handleImportConfig}
+                      className="flex-1 py-2 bg-surface hover:bg-surface-3 border border-border rounded-xl font-bold text-text-1 flex items-center justify-center gap-1.5 transition-all text-[11px] cursor-pointer shadow-sm font-main"
+                    >
+                      <span>📥 Import Preset</span>
+                    </button>
+                    <button 
+                      onClick={handleExportConfig}
+                      className="flex-1 py-2 bg-surface hover:bg-surface-3 border border-border rounded-xl font-bold text-text-1 flex items-center justify-center gap-1.5 transition-all text-[11px] cursor-pointer shadow-sm font-main"
+                    >
+                      <span>📤 Export Preset</span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-center gap-1.5 text-[9.5px] text-text-2 border-t border-border/40 pt-2 bg-surface-3/10 py-1.5 rounded-lg">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green animate-pulse"></span>
+                    <span className="font-semibold text-green/90">Settings Autosaved Automatically</span>
                   </div>
                 </div>
 

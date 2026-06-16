@@ -996,7 +996,7 @@ export default function VideoSplitter() {
           if (hookIdx !== -1 && selectedHook) {
             filterParts.push(`[${hookIdx}:v]crop=${hookCropW}:${hookCropH},scale=${targetW}:${targetH}[hook_v]`);
             if (hookAudioStatus[selectedHook.name]) {
-              filterParts.push(`[${hookIdx}:a]volume=1[hook_a]`);
+              filterParts.push(`[${hookIdx}:a]aresample=44100,aformat=channel_layouts=stereo[hook_a]`);
             } else {
               filterParts.push(`anullsrc=r=44100:cl=stereo:d=${hookDuration}[hook_a]`);
             }
@@ -1004,36 +1004,35 @@ export default function VideoSplitter() {
 
           // Primary video composition with chosen Framing Mode
           if (isAspectActive || (isGenZSplit && bgVideoFile)) {
+            const currentTargetH = (isGenZSplit && bgVideoFile) ? (targetH / 2) : targetH;
             if (isGenZSplit && bgVideoFile) {
-              let primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${targetH / 2}`;
+              let primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${currentTargetH}`;
               if (bypassCopyright) {
-                primVF += `,hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
+                primVF += `,crop=0.985*iw:0.985*ih,scale=${targetW}:${currentTargetH},hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
               }
               filterParts.push(`${primVF}[primary_v]`);
             } else {
               let primVF = "";
               if (framingMode === "crop") {
-                primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${targetH}`;
+                primVF = `[${primaryIdx}:v]crop=${safePrimaryCropW}:${safePrimaryCropH},scale=${targetW}:${currentTargetH}`;
               } else if (framingMode === "letterbox") {
-                const zoomCrop = bypassCopyright ? "crop=0.985*iw:0.985*ih," : "";
-                primVF = `[${primaryIdx}:v]${zoomCrop}scale=${targetW}:-2,pad=${targetW}:${targetH}:0:(oh-ih)/2:black`;
+                primVF = `[${primaryIdx}:v]scale=${targetW}:-2,pad=${targetW}:${currentTargetH}:0:(oh-ih)/2:black`;
               } else {
-                const zoomCrop = bypassCopyright ? "crop=0.985*iw:0.985*ih," : "";
-                filterParts.push(`[${primaryIdx}:v]${zoomCrop}split=2[v_bg][v_fg]`);
-                filterParts.push(`[v_bg]crop=${primaryCropW}:${primaryCropH},scale=${targetW}:${targetH},boxblur=20:2[bg_blur]`);
+                filterParts.push(`[${primaryIdx}:v]split=2[v_bg][v_fg]`);
+                filterParts.push(`[v_bg]crop=${primaryCropW}:${primaryCropH},scale=${targetW}:${currentTargetH},boxblur=20:2[bg_blur]`);
                 filterParts.push(`[v_fg]scale=${targetW}:-2[fg_scaled]`);
                 primVF = `[bg_blur][fg_scaled]overlay=0:(H-h)/2`;
               }
               
               if (bypassCopyright) {
-                primVF += `,hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
+                primVF += `,crop=0.985*iw:0.985*ih,scale=${targetW}:${currentTargetH},hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
               }
               filterParts.push(`${primVF}[primary_v]`);
             }
           } else {
             let primVF = `[${primaryIdx}:v]`;
             if (bypassCopyright) {
-              primVF += `crop=0.985*iw:0.985*ih,hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
+              primVF += `crop=0.985*iw:0.985*ih,scale=${targetW}:${targetH},hue=h=${hueShift}:s=${satShift},setpts=PTS/${speed}`;
             } else {
               primVF += `null`;
             }
@@ -1046,9 +1045,9 @@ export default function VideoSplitter() {
             if (bypassCopyright) {
               const pitchFactor = 1.01;
               const tempoCombined = (Number(speed) / pitchFactor).toFixed(4);
-              primAF += `asetrate=44100*${pitchFactor},atempo=${tempoCombined},aresample=44100`;
+              primAF += `asetrate=${Math.round(44100 * pitchFactor)},atempo=${tempoCombined},aresample=44100,aformat=channel_layouts=stereo`;
             } else {
-              primAF += `anull`;
+              primAF += `aresample=44100,aformat=channel_layouts=stereo`;
             }
             filterParts.push(`${primAF}[primary_a]`);
           } else {
@@ -1065,15 +1064,15 @@ export default function VideoSplitter() {
 
           // Background Music overlay
           if (isBgAudioEnabled && bgAudioFile && bgAudioIdx !== -1) {
-            filterParts.push(`[${bgAudioIdx}:a]volume=${bgmVolume}[bgm_a]`);
+            filterParts.push(`[${bgAudioIdx}:a]aresample=44100,aformat=channel_layouts=stereo,volume=${bgmVolume}[bgm_a]`);
             if (bgAudioMode === 'bgm_only') {
               filterParts.push(`[primary_a]volume=0[silent_primary_a]`);
-              filterParts.push(`[silent_primary_a][bgm_a]amix=inputs=2:duration=first[main_a]`);
+              filterParts.push(`[silent_primary_a][bgm_a]amix=inputs=2:duration=first,aformat=channel_layouts=stereo[main_a]`);
             } else {
-              filterParts.push(`[primary_a][bgm_a]amix=inputs=2:duration=first[main_a]`);
+              filterParts.push(`[primary_a][bgm_a]amix=inputs=2:duration=first,aformat=channel_layouts=stereo[main_a]`);
             }
           } else {
-            filterParts.push(`[primary_a]anull[main_a]`);
+            filterParts.push(`[primary_a]anull,aformat=channel_layouts=stereo[main_a]`);
           }
 
           // Append Hook if enabled
@@ -1156,6 +1155,7 @@ export default function VideoSplitter() {
             "-crf", "18",
             "-c:a", "aac",
             "-b:a", "192k",
+            "-ac", "2",
             "-avoid_negative_ts", "1"
           );
 

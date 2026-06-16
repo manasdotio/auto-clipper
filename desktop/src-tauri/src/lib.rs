@@ -435,6 +435,56 @@ fn write_binary_file(path: String, data: Vec<u8>) -> Result<(), String> {
     std::fs::write(path, data).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn save_config_file(app: AppHandle, data: String) -> Option<bool> {
+    run_on_main_thread(&app, move || {
+        rfd::FileDialog::new()
+            .set_file_name("clipper_preset.json")
+            .add_filter("JSON Config", &["json"])
+            .save_file()
+            .map(|p| {
+                if let Ok(mut file) = std::fs::File::create(p) {
+                    file.write_all(data.as_bytes()).is_ok()
+                } else {
+                    false
+                }
+            })
+    })
+}
+
+#[tauri::command]
+fn select_config_file(app: AppHandle) -> Option<String> {
+    run_on_main_thread(&app, || {
+        rfd::FileDialog::new()
+            .add_filter("JSON Config", &["json"])
+            .pick_file()
+            .and_then(|p| {
+                std::fs::read_to_string(p).ok()
+            })
+    })
+}
+
+#[tauri::command]
+fn save_autosave_config(app: AppHandle, data: String) -> Result<(), String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&config_dir);
+    let config_path = config_dir.join("autosave_config.json");
+    std::fs::write(config_path, data).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_autosave_config(app: AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let config_dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    let config_path = config_dir.join("autosave_config.json");
+    if config_path.exists() {
+        std::fs::read_to_string(config_path).map_err(|e| e.to_string())
+    } else {
+        Err("No config file found".to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     start_local_server();
@@ -464,7 +514,11 @@ pub fn run() {
             write_binary_file,
             get_video_url,
             get_temp_directory,
-            check_file_exists
+            check_file_exists,
+            save_config_file,
+            select_config_file,
+            save_autosave_config,
+            load_autosave_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
